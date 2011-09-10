@@ -19,10 +19,13 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #
+
+import logging
 import string
 import sys
 
 import pyborg
+
 
 class ModFileIn:
     """
@@ -33,23 +36,26 @@ class ModFileIn:
     commandlist = "FileIn Module Commands:\nNone"
     commanddict = {}
 
-    def __init__(self, Borg, args):
+    def __init__(self, borg, args):
+        for filename in args:
+            self.learn_file(borg, filename)
 
-        f = open(args[1], "r")
-        buffer = f.read()
-        f.close()
+    def learn_file(self, borg, filename):
+        with open(filename, 'r') as f:
+            buffer = f.read()
 
-        print "I knew "+`Borg.settings.num_words`+" words ("+`len(Borg.lines)`+" lines) before reading "+sys.argv[1]
-        buffer = pyborg.filter_message(buffer, Borg)
-        # Learn from input
+        logging.info("I knew %d words (%d lines) before reading %s",
+            borg.settings.num_words, len(borg.brain.lines), filename)
+
+        buffer = pyborg.filter_message(buffer, borg)
         try:
-            print buffer
-            Borg.learn(buffer)
+            borg.learn(buffer)
         except KeyboardInterrupt, e:
             # Close database cleanly
             print "Premature termination :-("
-        print "I know "+`Borg.settings.num_words`+" words ("+`len(Borg.lines)`+" lines) now."
-        del Borg
+
+        logging.info("I know %d words (%d lines) now!",
+            borg.settings.num_words, len(borg.brain.lines))
 
     def shutdown(self):
         pass
@@ -60,13 +66,13 @@ class ModFileIn:
     def output(self, message, args):
         pass
 
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     if len(sys.argv) < 2:
         print "Specify a filename."
         sys.exit()
-    # start the pyborg
-    my_pyborg = pyborg.pyborg()
-    ModFileIn(my_pyborg, sys.argv)
-    my_pyborg.save_all()
-    del my_pyborg
 
+    my_pyborg = pyborg.Pyborg()
+    ModFileIn(my_pyborg, sys.argv[1:])
+    my_pyborg.save_all()
