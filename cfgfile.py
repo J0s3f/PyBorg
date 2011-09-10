@@ -19,85 +19,80 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #
-import string
+
+import collections
+from itertools import izip, count
+import os
+
 
 def _load_config(filename):
     """
     Load a config file returning dictionary of variables.
     """
-    try:
-        f = open(filename, "r")
-    except IOError, e:
-        return None
+    if not os.access(filename, os.R_OK):
+        return
 
-    stuff = {}
-    line = 0
+    with open(filename, 'r') as f:
+        settings = {}
 
-    while 1:
-        line = line + 1
-        s = f.readline()
-        if s=="":
-            break
-        if s[0]=="#":
-            continue
+        for line, i in izip(f, count(1)):
+            line = line.rstrip()
+            if not line or line.startswith('#'):
+                continue
 
-        #read if the string is above multiple lines
-        while s.rfind("\\") > -1:
-            s = s[:s.rfind("\\")] + f.readline()
-            line = line + 1
+            # TODO: add multiline values back in
+            #read if the string is above multiple lines
+            #while s.rfind("\\") > -1:
+            #    s = s[:s.rfind("\\")] + f.readline()
+            #    line = line + 1
 
-        s = string.split(s, "=")
-        if len(s) != 2:
-            print "Malformed line in %s line %d" % (filename, line)
-            print s
-            continue
-        stuff[string.strip(s[0])] = eval(string.strip(string.join(s[1:], "=")))
-    return stuff
+            try:
+                key, value = line.split('=', 1)
+            except ValueError:
+                raise ValueError("Malformed config line {0} in config file {1}: missing '=' in {2}".format(i, filename, repr(line)))
+
+            key, value = key.strip(), value.strip()
+            settings[key] = eval(value)
+
+    return settings
+
 
 def _save_config(filename, fields):
     """
     fields should be a dictionary. Keys as names of
     variables containing tuple (string comment, value).
     """
-    f = open(filename, "w")
-
-    # write the values with comments. this is a silly comment
-    for key in fields.keys():
-        f.write("# "+fields[key][0]+"\n")
-        s = repr(fields[key][1])
-        f.write(key+"\t= ")
-        if len(s) > 80:
-            cut_string = ""
-            while len(s) > 80:
-                position = s.rfind(",",0,80)+1
-                cut_string = cut_string + s[:position] + "\\\n\t\t"
-                s = s[position:]
-            s = cut_string + s
-        f.write(s+"\n")
-
-    f.close()
+    with open(filename, 'w') as f:
+        for key, data in sorted(fields.iteritems(), key=lambda f: f[0]):
+            comment, value = data
+            value_str = repr(value)
+            f.write('# {0}\n{1} = {2}\n\n'.format(comment, key, value_str))
 
 
-class cfgset:
-    def load(self, filename, defaults):
+Setting = collections.namedtuple('setting', ['comment', 'default'])
+
+
+class Settings(object):
+
+    def __init__(self, defaults):
+        self._defaults = defaults
+        for key, setting in defaults.iteritems():
+            setattr(self, key, setting.default)
+
+    def load(self, filename):
         """
         Defaults should be key=variable name, value=
         tuple of (comment, default value)
         """
-        self._defaults = defaults
         self._filename = filename
 
-        for i in defaults.keys():
-            self.__dict__[i] = defaults[i][1]
-
-        # try to laad saved ones
-        vars = _load_config(filename)
-        if vars == None:
-            # none found. this is new
+        # Try to laad the existing config.
+        config = _load_config(filename)
+        if not config:
             self.save()
             return
-        for i in vars.keys():
-            self.__dict__[i] = vars[i]
+
+        self.__dict__.update(config)
 
     def save(self):
         """

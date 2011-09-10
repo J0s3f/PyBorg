@@ -34,6 +34,8 @@ import time
 import zipfile
 import re
 
+from cfgfile import Setting, Settings
+
 
 def filter_message( message, bot ):
     """
@@ -100,7 +102,6 @@ def filter_message( message, bot ):
 
 
 class pyborg:
-    import cfgfile
 
     ver_string = "I am a version 1.1.2 PyBorg"
     saves_version = "1.1.0"
@@ -131,25 +132,25 @@ class pyborg:
         """
         Open the dictionary. Resize as required.
         """
-        # Attempt to load settings
-        self.settings = self.cfgfile.cfgset()
-        self.settings.load( "pyborg.cfg",
-            { "num_contexts": ( "Total word contexts", 0 ),
-              "num_words":    ( "Total unique words known", 0 ),
-              "max_words":    ( "max limits in the number of words known", 6000 ),
-              "learning":    ( "Allow the bot to learn", 1 ),
-              "ignore_list":( "Words that can be ignored for the answer", ['!.', '?.', "'", ',', ';'] ),
-              "censored":    ( "Don't learn the sentence if one of those words is found", [] ),
-              "num_aliases":( "Total of aliases known", 0 ),
-              "aliases":    ( "A list of similars words", {} ),
-              "process_with":( "Wich way for generate the reply ( pyborg|megahal)", "pyborg" ),
-              "no_save"    :( "If True, Pyborg don't saves the dictionary and configuration on disk", "False" )
-            } )
+        self.settings = Settings({
+            'aliases': Setting("A list of similar words", {}),
+            'censored': Setting("Words that indicate not to learn the sentences in which they appear", []),
+            'ignore_list': Setting("Words to ignore for the answer", ['!.', '?.', "'", ',', ';']),
+            'learning': Setting("If True, the bot will learn new words", True),
+            'max_words': Setting("Max number of words to learn", 6000),
+            'no_save': Setting("If True, don't overwrite the dictionary and configuration on disk", False),
+            'num_aliases': Setting("Total known aliases", 0),
+            'num_contexts': Setting("Total word contexts", 0),
+            'num_words': Setting("Total known unique words", 0),
+            'process_with': Setting("Which library to generate replies with ('pyborg' or 'megahal')", "pyborg"),
+        })
+        self.settings.load('pyborg.cfg')
 
-        self.answers = self.cfgfile.cfgset()
-        self.answers.load( "answers.txt",
-            { "sentences":    ( "A list of prepared answers", {} )
-            } )
+        self.answers = Settings({
+            'sentences': Setting("A list of prepared answers", {}),
+        })
+        self.answers.load('answers.txt')
+
         self.unfilterd = {}
 
         # Read the dictionary
