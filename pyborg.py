@@ -25,6 +25,7 @@
 # Seb Dailly <seb.dailly@gmail.com>
 """
 
+from itertools import izip, count
 import logging
 import marshal    # buffered marshal is bloody fast. wish i'd found this before :)
 import os
@@ -251,48 +252,49 @@ class PyborgBrain(Brain):
         Learn from a sentence.
         """
         words = body.split()
-        # Ignore sentences of < 1 words XXX was < 3
-        if len(words) < 1:
+
+        # Ignore empty sentences.
+        # TODO: this used to be sentences with fewer than three words. should it be?
+        if not words:
             return
 
-        voyelles = "aÃ Ã¢eÃ©Ã¨ÃªiÃ®Ã¯oÃ¶Ã´uÃ¼Ã»y"
-        for x in xrange(0, len(words)):
-            nb_voy = 0
-            digit = 0
-            char = 0
-            for c in words[x]:
-                if c in voyelles:
-                    nb_voy += 1
-                if c.isalpha():
-                    char += 1
-                if c.isdigit():
-                    digit += 1
+        all_vowels = "aÃ Ã¢eÃ©Ã¨ÃªiÃ®Ã¯oÃ¶Ã´uÃ¼Ã»y"
 
+        for word in words:
             for censored in self.settings.censored:
                 pattern = "^%s$" % censored
-                if re.search(pattern, words[x]):
-                    self.log.debug("Censored word %s", words[x])
+                if re.search(pattern, word):
+                    self.log.debug("Not learning a sentence: word %r is censored", word)
                     return
-
-            if len(words[x]) > 13 \
-                or (((nb_voy * 100) / len(words[x]) < 26) and len(words[x]) > 5) \
-                or (char and digit) \
-                or (self.words.has_key(words[x]) == 0 and self.settings.learning == 0):
-                #if one word as more than 13 characters, don't learn
-                #        ( in french, this represent 12% of the words )
-                #and don't learn words where there are less than 25% of voyels
-                #don't learn the sentence if one word is censored
-                #don't learn too if there are digits and char in the word
-                #same if learning is off
+            if not self.settings.learning and word not in self.words:
+                self.log.debug("Not learning a sentence: learning is off and %r is a new word", word)
                 return
-            elif ("-" in words[x] or "_" in words[x]):
-                words[x] = "#nick"
+            if len(word) > 13:
+                self.log.debug("Not learning a sentence: word %r is too long", word)
+                return
 
-        num_w = self.settings.num_words
-        if num_w != 0:
-            num_cpw = self.settings.num_contexts / float(num_w) # contexts per word
-        else:
-            num_cpw = 0
+            vowels, digits, chars = 0, 0, 0
+            for c in word:
+                if c in all_vowels:
+                    vowels += 1
+                if c.isalpha():
+                    chars += 1
+                if c.isdigit():
+                    digits += 1
+
+            if chars and digits:
+                self.log.debug("Not learning a sentence: word %r is mixed alphanumeric", word)
+                return
+            if len(word) > 5 and vowels // len(word) < 0.25:
+                self.log.debug("Not learning a sentence: word %r has too few vowels (%.2f)", word, num_vowels // len(word))
+                return
+
+        words = ['#nick' if '-' in word or '_' in word else word for word in words]
+
+        try:
+            contexts_per_word = self.settings.num_contexts / self.settings.num_words
+        except ZeroDivisionError:
+            contexts_per_word = 0
 
         cleanbody = " ".join(words)
 
@@ -300,35 +302,33 @@ class PyborgBrain(Brain):
         hashval = hash(cleanbody)
 
         # Check context isn't already known
-        if not self.lines.has_key(hashval):
-            if not (num_cpw > 100 and self.settings.learning == 0):
-                self.lines[hashval] = [cleanbody, num_context]
-                # Add link for each word
-                for x in xrange(0, len(words)):
-                    if self.words.has_key(words[x]):
-                        # Add entry. (line number, word number)
-                        self.words[words[x]].append(struct.pack("lH", hashval, x))
-                    else:
-                        self.words[words[x]] = [struct.pack("lH", hashval, x)]
-                        self.settings.num_words += 1
-                    self.settings.num_contexts += 1
-        else:
+        if hashval in self.lines:
             self.lines[hashval][1] += num_context
+        # TODO: is this a bug that we can learn until 100 cpw even when "learning" is off?
+        elif contexts_per_word <= 100 or self.settings.learning:
+            self.lines[hashval] = [cleanbody, num_context]
+            # Add a link for each word.
+            for i, word in izip(count(0), words):
+                try:
+                    word_contexts = self.words[word]
+                except KeyError:
+                    self.settings.num_words += 1
+                    word_contexts = self.words[word] = list()
+                word_contexts.append(struct.pack("lH", hashval, i))
+                self.settings.num_contexts += 1
 
-        # is max_words reached, don't learn more
+        # Stop learning when we know enough words.
         if self.settings.num_words >= self.settings.max_words:
-            self.settings.learning = 0
+            self.log.info("STOP LEARNING: got %d words (max %d)", self.settings.num_words, self.settings.max_words)
+            self.settings.learning = False
 
     def learn(self, body, num_context=1):
         """
         Lines should be cleaned (filter_message()) before passing
         to this.
         """
-        # Split body text into sentences and parse them
-        # one by one.
-        body += " "
-        #map((lambda x: learn_line(self, x, num_context)), body.split(". "))
-        [self.learn_sentence(x, num_context) for x in body.split( ". " )]
+        for sentence in body.split('. '):
+            self.learn_sentence(sentence, num_context)
 
     def unlearn(self, context):
         """
