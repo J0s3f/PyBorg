@@ -101,10 +101,511 @@ def filter_message( message, bot ):
     return message
 
 
-class pyborg:
+class Brain(object):
+
+    def __init__(self, settings):
+        self.settings = settings
+
+    def learn(self, body):
+        raise NotImplementedError
+
+    def reply(self, body):
+        raise NotImplementedError
+
+    def save(self):
+        pass
+
+
+class MegahalBrain(Brain):
+
+    def __init__(self, settings):
+        super(MegahalBrain, self).__init__(settings)
+        import mh_python
+
+    def learn(self, body):
+        return mh_python.learn(body)
+
+    def reply(self, body):
+        return mh_python.doreply(body)
+
+
+class PyborgBrain(Brain):
+
+    saves_version = "1.1.0"
+
+    def __init__(self, settings):
+        super(PyborgBrain, self).__init__(settings)
+
+        print "Reading dictionary..."
+        try:
+            zfile = zipfile.ZipFile( 'archive.zip', 'r' )
+            for filename in zfile.namelist():
+                data = zfile.read( filename )
+                data_file = open( filename, 'w+b' )
+                data_file.write( data )
+                data_file.close()
+        except ( EOFError, IOError ):
+            print "no zip found"
+        try:
+
+            content = self.read_file( "version" )
+            if content != self.saves_version:
+                print "Error loading dictionary\Please convert it before launching pyborg"
+                sys.exit( 1 )
+
+            content = self.read_file( "words.dat" )
+            self.words = marshal.loads( content )
+            del content
+            content = self.read_file( "lines.dat" )
+            self.lines = marshal.loads( content )
+            del content
+        except ( EOFError, IOError ):
+            # Create mew database
+            self.words = {}
+            self.lines = {}
+            print "Error reading saves. New database created."
+
+        # Is a resizing required?
+        if len( self.words ) != self.settings.num_words:
+            print "Updating dictionary information..."
+            self.settings.num_words = len( self.words )
+            num_contexts = 0
+            # Get number of contexts
+            for x in self.lines.keys():
+                num_contexts += len( self.lines[x][0].split() )
+            self.settings.num_contexts = num_contexts
+            # Save new values
+            self.settings.save()
+
+        # Is an aliases update required ?
+        compteur = 0
+        for x in self.settings.aliases.keys():
+            compteur += len( self.settings.aliases[x] )
+        if compteur != self.settings.num_aliases:
+            print "check dictionary for new aliases"
+            self.settings.num_aliases = compteur
+
+            for x in self.words.keys():
+                #is there aliases ?
+                if x[0] != '~':
+                    for z in self.settings.aliases.keys():
+                        for alias in self.settings.aliases[z]:
+                            pattern = "^%s$" % alias
+                            if self.re.search( pattern, x ):
+                                print "replace %s with %s" % ( x, z )
+                                self.replace( x, z )
+
+            for x in self.words.keys():
+                if not ( x in self.settings.aliases.keys() ) and x[0] == '~':
+                    print "unlearn %s" % x
+                    self.settings.num_aliases -= 1
+                    self.unlearn( x )
+                    print "unlearned aliases %s" % x
+
+
+        #unlearn words in the unlearn.txt file.
+        try:
+            f = open( "unlearn.txt", "r" )
+            while 1:
+                word = f.readline().strip( '\n' )
+                if word == "":
+                    break
+                if self.words.has_key( word ):
+                    self.unlearn( word )
+            f.close()
+        except ( EOFError, IOError ):
+            # No words to unlearn
+            pass
+
+    def save(self):
+        print "Writing dictionary..."
+
+        try:
+            zfile = zipfile.ZipFile( 'archive.zip', 'r' )
+            for filename in zfile.namelist():
+                data = zfile.read( filename )
+                file = open( filename, 'w+b' )
+                file.write( data )
+                file.close()
+        except ( OSError, IOError ), e:
+            print "no zip found. Is the programm launch for first time ?"
+
+
+        f = open( "words.dat", "wb" )
+        s = marshal.dumps( self.words )
+        f.write( s )
+        f.close()
+        f = open( "lines.dat", "wb" )
+        s = marshal.dumps( self.lines )
+        f.write( s )
+        f.close()
+
+        #save the version
+        f = open( "version", "w" )
+        f.write( self.saves_version )
+        f.close()
+
+
+        #zip the files
+        f = zipfile.ZipFile( 'archive.zip', 'w', zipfile.ZIP_DEFLATED )
+        f.write( 'words.dat' )
+        f.write( 'lines.dat' )
+        f.write( 'version' )
+        f.close()
+
+        try:
+            os.remove( 'words.dat' )
+            os.remove( 'lines.dat' )
+            os.remove( 'version' )
+        except ( OSError, IOError ), e:
+            print "could not remove the files"
+
+        f = open( "words.txt", "w" )
+        # write each words known
+        wordlist = []
+        #Sort the list befor to export
+        for key in self.words.keys():
+            wordlist.append( [key, len( self.words[key] )] )
+        wordlist.sort( lambda x, y: cmp( x[1], y[1] ) )
+        #map( ( lambda x: f.write( str( x[0] ) + "\n\r" ) ), wordlist )
+        [ f.write( str( x[0] ) + "\n\r" ) for x in wordlist]
+        f.close()
+
+    def learn_sentence(self, body, num_context):
+        """
+        Learn from a sentence.
+        """
+
+        words = body.split()
+        # Ignore sentences of < 1 words XXX was < 3
+        if len( words ) < 1:
+            return
+
+        voyelles = "aÃ Ã¢eÃ©Ã¨ÃªiÃ®Ã¯oÃ¶Ã´uÃ¼Ã»y"
+        for x in xrange( 0, len( words ) ):
+
+            nb_voy = 0
+            digit = 0
+            char = 0
+            for c in words[x]:
+                if c in voyelles:
+                    nb_voy += 1
+                if c.isalpha():
+                    char += 1
+                if c.isdigit():
+                    digit += 1
+
+            for censored in self.settings.censored:
+                pattern = "^%s$" % censored
+                if re.search( pattern, words[x] ):
+                    print "Censored word %s" % words[x]
+                    return
+
+            if len( words[x] ) > 13 \
+            or ( ( ( nb_voy * 100 ) / len( words[x] ) < 26 ) and len( words[x] ) > 5 ) \
+            or ( char and digit ) \
+            or ( self.words.has_key( words[x] ) == 0 and self.settings.learning == 0 ):
+                #if one word as more than 13 characters, don't learn
+                #        ( in french, this represent 12% of the words )
+                #and don't learn words where there are less than 25% of voyels
+                #don't learn the sentence if one word is censored
+                #don't learn too if there are digits and char in the word
+                #same if learning is off
+                return
+            elif ( "-" in words[x] or "_" in words[x] ) :
+                words[x] = "#nick"
+
+
+        num_w = self.settings.num_words
+        if num_w != 0:
+            num_cpw = self.settings.num_contexts / float( num_w ) # contexts per word
+        else:
+            num_cpw = 0
+
+        cleanbody = " ".join( words )
+
+        # Hash collisions we don't care about. 2^32 is big :-)
+        hashval = hash( cleanbody )
+
+        # Check context isn't already known
+        if not self.lines.has_key( hashval ):
+            if not( num_cpw > 100 and self.settings.learning == 0 ):
+
+                self.lines[hashval] = [cleanbody, num_context]
+                # Add link for each word
+                for x in xrange( 0, len( words ) ):
+                    if self.words.has_key( words[x] ):
+                        # Add entry. (line number, word number)
+                        self.words[words[x]].append( struct.pack( "lH", hashval, x ) )
+                    else:
+                        self.words[words[x]] = [ struct.pack( "lH", hashval, x ) ]
+                        self.settings.num_words += 1
+                    self.settings.num_contexts += 1
+        else :
+            self.lines[hashval][1] += num_context
+
+        #is max_words reached, don't learn more
+        if self.settings.num_words >= self.settings.max_words:
+            self.settings.learning = 0
+
+    def learn(self, body, num_context=1):
+        """
+        Lines should be cleaned (filter_message()) before passing
+        to this.
+        """
+        # Split body text into sentences and parse them
+        # one by one.
+        body += " "
+        #map ( ( lambda x : learn_line( self, x, num_context ) ), body.split( ". " ) )
+        [self.learn_sentence(x, num_context) for x in body.split( ". " )]
+
+    def unlearn(self, context):
+        """
+        Unlearn all contexts containing 'context'. If 'context'
+        is a single word then all contexts containing that word
+        will be removed, just like the old !unlearn <word>
+        """
+        # Pad thing to look for
+        # We pad so we don't match 'shit' when searching for 'hit', etc.
+        context = " " + context + " "
+        # Search through contexts
+        # count deleted items
+        dellist = []
+        # words that will have broken context due to this
+        wordlist = []
+        for x in self.lines.keys():
+            # get context. pad
+            c = " " + self.lines[x][0] + " "
+            if c.find( context ) != -1:
+                # Split line up
+                wlist = self.lines[x][0].split()
+                # add touched words to list
+                for w in wlist:
+                    if not w in wordlist:
+                        wordlist.append( w )
+                dellist.append( x )
+                del self.lines[x]
+        words = self.words
+        unpack = struct.unpack
+        # update links
+        for x in wordlist:
+            word_contexts = words[x]
+            # Check all the word's links (backwards so we can delete)
+            for y in xrange( len( word_contexts ) - 1, -1, -1 ):
+                # Check for any of the deleted contexts
+                if unpack( "lH", word_contexts[y] )[0] in dellist:
+                    del word_contexts[y]
+                    self.settings.num_contexts = self.settings.num_contexts - 1
+            if len( words[x] ) == 0:
+                del words[x]
+                self.settings.num_words = self.settings.num_words - 1
+                print "\"%s\" vaped totally" % x
+
+    def reply(self, body):
+        """
+        Reply to a line of text.
+        """
+        # split sentences into list of words
+        _words = body.split( " " )
+        words = []
+        for i in _words:
+            words += i.split()
+        del _words
+
+        if len( words ) == 0:
+            return ""
+
+        #remove words on the ignore list
+        #words = filter((lambda x: x not in self.settings.ignore_list and not x.isdigit() ), words)
+        words = ( x for x in words if x not in self.settings.ignore_list and not x.isdigit() )
+
+        # Find rarest word (excluding those unknown)
+        index = []
+        known = -1
+        #The word has to be seen in already 3 contexts differents for being choosen
+        known_min = 3
+        for x in  words:
+            if self.words.has_key( x ):
+                k = len( self.words[x] )
+            else:
+                continue
+            if ( known == -1 or k < known ) and k > known_min:
+                index = [x]
+                known = k
+                continue
+            elif k == known:
+                index.append( x )
+                continue
+        # Index now contains list of rarest known words in sentence
+        if len( index ) == 0:
+            return ""
+        word = index[random.randint( 0, len( index ) - 1 )]
+
+        # Build sentence backwards from "chosen" word
+        sentence = [word]
+        done = 0
+        while done == 0:
+            #create a dictionary wich will contain all the words we can found before the "chosen" word
+            pre_words = {"" : 0}
+            #this is for prevent the case when we have an ignore_listed word
+            word = str( sentence[0].split( " " )[0] )
+            for x in xrange( 0, len( self.words[word] ) - 1 ):
+                l, w = struct.unpack( "lH", self.words[word][x] )
+                context = self.lines[l][0]
+                num_context = self.lines[l][1]
+                cwords = context.split()
+                #if the word is not the first of the context, look the previous one
+                if cwords[w] != word:
+                    print context
+                if w:
+                    #look if we can found a pair with the choosen word, and the previous one
+                    if len( sentence ) > 1 and len( cwords ) > w + 1:
+                        if sentence[1] != cwords[w + 1]:
+                            continue
+
+                    #if the word is in ignore_list, look the previous word
+                    look_for = cwords[w - 1]
+                    if look_for in self.settings.ignore_list and w > 1:
+                        look_for = cwords[w - 2] + " " + look_for
+
+                    #saves how many times we can found each word
+                    if not( pre_words.has_key( look_for ) ):
+                        pre_words[look_for] = num_context
+                    else :
+                        pre_words[look_for] += num_context
+
+                else:
+                    pre_words[""] += num_context
+
+            #Sort the words
+            liste = pre_words.items()
+            liste.sort( lambda x, y: cmp( y[1], x[1] ) )
+
+            numbers = [liste[0][1]]
+            for x in xrange( 1, len( liste ) ):
+                numbers.append( liste[x][1] + numbers[x - 1] )
+
+            #take one them from the list ( randomly )
+            mot = random.randint( 0, numbers[len( numbers ) - 1] )
+            for x in xrange( 0, len( numbers ) ):
+                if mot <= numbers[x]:
+                    mot = liste[x][0]
+                    break
+
+            #if the word is already choosen, pick the next one
+            while mot in sentence:
+                x += 1
+                if x >= len( liste ) - 1:
+                    mot = ''
+                mot = liste[x][0]
+
+            mot = mot.split( " " )
+            mot.reverse()
+            if mot == ['']:
+                done = 1
+            else:
+                #map( ( lambda x: sentence.insert( 0, x ) ), mot )
+                [sentence.insert( 0, x ) for x in mot]
+
+        pre_words = sentence
+        sentence = sentence[-2:]
+
+        # Now build sentence forwards from "chosen" word
+
+        #We've got
+        #cwords:    ...    cwords[w-1]    cwords[w]    cwords[w+1]    cwords[w+2]
+        #sentence:    ...    sentence[-2]    sentence[-1]    look_for    look_for ?
+
+        #we are looking, for a cwords[w] known, and maybe a cwords[w-1] known, what will be the cwords[w+1] to choose.
+        #cwords[w+2] is need when cwords[w+1] is in ignored list
+
+
+        done = 0
+        while done == 0:
+            #create a dictionary wich will contain all the words we can found before the "chosen" word
+            post_words = {"" : 0}
+            word = str( sentence[-1].split( " " )[-1] )
+            for x in self.words[word]:
+                l, w = struct.unpack( "lH", x )
+                context = self.lines[l][0]
+                num_context = self.lines[l][1]
+                cwords = context.split()
+                #look if we can found a pair with the choosen word, and the next one
+                if len( sentence ) > 1:
+                    if sentence[len( sentence ) - 2] != cwords[w - 1]:
+                        continue
+
+                if w < len( cwords ) - 1:
+                    #if the word is in ignore_list, look the next word
+                    look_for = cwords[w + 1]
+                    if look_for in self.settings.ignore_list and w < len( cwords ) - 2:
+                        look_for = look_for + " " + cwords[w + 2]
+
+                    if not( post_words.has_key( look_for ) ):
+                        post_words[look_for] = num_context
+                    else :
+                        post_words[look_for] += num_context
+                else:
+                    post_words[""] += num_context
+            #Sort the words
+            liste = post_words.items()
+            liste.sort( lambda x, y: cmp( y[1], x[1] ) )
+            numbers = [liste[0][1]]
+
+            for x in xrange( 1, len( liste ) ):
+                numbers.append( liste[x][1] + numbers[x - 1] )
+
+            #take one them from the list ( randomly )
+            mot = random.randint( 0, numbers[len( numbers ) - 1] )
+            for x in xrange( 0, len( numbers ) ):
+                if mot <= numbers[x]:
+                    mot = liste[x][0]
+                    break
+
+            x = -1
+            while mot in sentence:
+                x += 1
+                if x >= len( liste ) - 1:
+                    mot = ''
+                    break
+                mot = liste[x][0]
+
+
+            mot = mot.split( " " )
+            if mot == ['']:
+                done = 1
+            else:
+                [ sentence.append( x ) for x in mot]
+                #map( ( lambda x: sentence.append( x ) ), mot )
+
+        sentence = pre_words[:-2] + sentence
+
+        #Replace aliases
+        for x in xrange( 0, len( sentence ) ):
+            if sentence[x][0] == "~":
+                sentence[x] = sentence[x][1:]
+
+        #Insert space between each words
+        #map( ( lambda x: sentence.insert( 1 + x * 2, " " ) ), xrange( 0, len( sentence ) - 1 ) )
+        [sentence.insert( 1 + x * 2, " " ) for x in xrange( 0, len( sentence ) - 1 )]
+
+        #correct the ' & , spaces problem
+        #code is not very good and can be improve but does his job...
+        for x in xrange( 0, len( sentence ) ):
+            if sentence[x] == "'":
+                sentence[x - 1] = ""
+                sentence[x + 1] = ""
+            for split_char in ['?', '!', ',']:
+                if sentence[x] == split_char:
+                    sentence[x - 1] = ""
+
+        #return as string..
+        return "".join( sentence )
+
+
+class Pyborg(object):
 
     ver_string = "I am a version 1.1.2 PyBorg"
-    saves_version = "1.1.0"
 
     # Main command list
     commandlist = "Pyborg commands:\n!checkdict, !contexts, !help, !known, !learning, !rebuilddict, \
@@ -155,86 +656,11 @@ class pyborg:
 
         # Read the dictionary
         if self.settings.process_with == "pyborg":
-            print "Reading dictionary..."
-            try:
-                zfile = zipfile.ZipFile( 'archive.zip', 'r' )
-                for filename in zfile.namelist():
-                    data = zfile.read( filename )
-                    data_file = open( filename, 'w+b' )
-                    data_file.write( data )
-                    data_file.close()
-            except ( EOFError, IOError ):
-                print "no zip found"
-            try:
-
-                content = self.read_file( "version" )
-                if content != self.saves_version:
-                    print "Error loading dictionary\Please convert it before launching pyborg"
-                    sys.exit( 1 )
-
-                content = self.read_file( "words.dat" )
-                self.words = marshal.loads( content )
-                del content
-                content = self.read_file( "lines.dat" )
-                self.lines = marshal.loads( content )
-                del content
-            except ( EOFError, IOError ):
-                # Create mew database
-                self.words = {}
-                self.lines = {}
-                print "Error reading saves. New database created."
-
-            # Is a resizing required?
-            if len( self.words ) != self.settings.num_words:
-                print "Updating dictionary information..."
-                self.settings.num_words = len( self.words )
-                num_contexts = 0
-                # Get number of contexts
-                for x in self.lines.keys():
-                    num_contexts += len( self.lines[x][0].split() )
-                self.settings.num_contexts = num_contexts
-                # Save new values
-                self.settings.save()
-
-            # Is an aliases update required ?
-            compteur = 0
-            for x in self.settings.aliases.keys():
-                compteur += len( self.settings.aliases[x] )
-            if compteur != self.settings.num_aliases:
-                print "check dictionary for new aliases"
-                self.settings.num_aliases = compteur
-
-                for x in self.words.keys():
-                    #is there aliases ?
-                    if x[0] != '~':
-                        for z in self.settings.aliases.keys():
-                            for alias in self.settings.aliases[z]:
-                                pattern = "^%s$" % alias
-                                if self.re.search( pattern, x ):
-                                    print "replace %s with %s" % ( x, z )
-                                    self.replace( x, z )
-
-                for x in self.words.keys():
-                    if not ( x in self.settings.aliases.keys() ) and x[0] == '~':
-                        print "unlearn %s" % x
-                        self.settings.num_aliases -= 1
-                        self.unlearn( x )
-                        print "unlearned aliases %s" % x
-
-
-            #unlearn words in the unlearn.txt file.
-            try:
-                f = open( "unlearn.txt", "r" )
-                while 1:
-                    word = f.readline().strip( '\n' )
-                    if word == "":
-                        break
-                    if self.words.has_key( word ):
-                        self.unlearn( word )
-                f.close()
-            except ( EOFError, IOError ):
-                # No words to unlearn
-                pass
+            self.brain = PyborgBrain(self.settings)
+        elif self.settings.process_with == "megahal":
+            self.brain = MegahalBrain(self.settings)
+        else:
+            raise ValueError("Unknown 'process_with' value {0}".format(self.settings.process_with))
 
         self.settings.save()
 
@@ -248,89 +674,29 @@ class pyborg:
         return data
 
     def save_all( self ):
-        if self.settings.process_with == "pyborg" and self.settings.no_save != "True":
-            print "Writing dictionary..."
+        if self.settings.no_save:
+            return
 
-            try:
-                zfile = zipfile.ZipFile( 'archive.zip', 'r' )
-                for filename in zfile.namelist():
-                    data = zfile.read( filename )
-                    file = open( filename, 'w+b' )
-                    file.write( data )
-                    file.close()
-            except ( OSError, IOError ), e:
-                print "no zip found. Is the programm launch for first time ?"
+        self.brain.save()
 
+        f = open( "sentences.txt", "w" )
+        # write each words known
+        wordlist = []
+        #Sort the list befor to export
+        for key in self.unfilterd.keys():
+            wordlist.append( [key, self.unfilterd[key]] )
+        wordlist.sort( lambda x, y: cmp( y[1], x[1] ) )
+        #map( ( lambda x: f.write( str( x[0] ) + "\n" ) ), wordlist )
+        [ f.write( str( x[0] ) + "\n" ) for x in wordlist ]
+        f.close()
 
-            f = open( "words.dat", "wb" )
-            s = marshal.dumps( self.words )
-            f.write( s )
-            f.close()
-            f = open( "lines.dat", "wb" )
-            s = marshal.dumps( self.lines )
-            f.write( s )
-            f.close()
-
-            #save the version
-            f = open( "version", "w" )
-            f.write( self.saves_version )
-            f.close()
-
-
-            #zip the files
-            f = zipfile.ZipFile( 'archive.zip', 'w', zipfile.ZIP_DEFLATED )
-            f.write( 'words.dat' )
-            f.write( 'lines.dat' )
-            f.write( 'version' )
-            f.close()
-
-            try:
-                os.remove( 'words.dat' )
-                os.remove( 'lines.dat' )
-                os.remove( 'version' )
-            except ( OSError, IOError ), e:
-                print "could not remove the files"
-
-            f = open( "words.txt", "w" )
-            # write each words known
-            wordlist = []
-            #Sort the list befor to export
-            for key in self.words.keys():
-                wordlist.append( [key, len( self.words[key] )] )
-            wordlist.sort( lambda x, y: cmp( x[1], y[1] ) )
-            #map( ( lambda x: f.write( str( x[0] ) + "\n\r" ) ), wordlist )
-            [ f.write( str( x[0] ) + "\n\r" ) for x in wordlist]
-            f.close()
-
-            f = open( "sentences.txt", "w" )
-            # write each words known
-            wordlist = []
-            #Sort the list befor to export
-            for key in self.unfilterd.keys():
-                wordlist.append( [key, self.unfilterd[key]] )
-            wordlist.sort( lambda x, y: cmp( y[1], x[1] ) )
-            #map( ( lambda x: f.write( str( x[0] ) + "\n" ) ), wordlist )
-            [ f.write( str( x[0] ) + "\n" ) for x in wordlist ]
-            f.close()
-
-
-            # Save settings
-            self.settings.save()
+        self.settings.save()
 
     def process_msg( self, io_module, body, replyrate, learn, args, owner = 0 ):
         """
         Process message 'body' and pass back to IO module with args.
         If owner==1 allow owner commands.
         """
-
-        try:
-            if self.settings.process_with == "megahal":
-                import mh_python
-        except:
-            self.settings.process_with = "pyborg"
-            self.settings.save()
-            print "Could not find megahal python library\nProgram ending"
-            sys.exit( 1 )
 
         # add trailing space so sentences are broken up correctly
         body = body + " "
@@ -344,11 +710,8 @@ class pyborg:
         body = filter_message( body, self )
 
         # Learn from input
-        if learn == 1:
-            if self.settings.process_with == "pyborg":
-                self.learn( body )
-            elif self.settings.process_with == "megahal" and self.settings.learning == 1:
-                mh_python.learn( body )
+        if learn == 1 and self.settings.learning:
+            self.brain.learn(body)
 
 
         # Make a reply if desired
@@ -369,10 +732,7 @@ class pyborg:
                         self.unfilterd[body] = 0
 
             if message == "":
-                if self.settings.process_with == "pyborg":
-                    message = self.reply( body )
-                elif self.settings.process_with == "megahal":
-                    message = mh_python.doreply( body )
+                message = self.brain.reply(body)
 
             # single word reply: always output
             if len( message.split() ) == 1:
@@ -761,334 +1121,8 @@ class pyborg:
         del self.words[old]
         return "%d instances of %s replaced with %s" % ( changed, old, new )
 
-    def unlearn( self, context ):
-        """
-        Unlearn all contexts containing 'context'. If 'context'
-        is a single word then all contexts containing that word
-        will be removed, just like the old !unlearn <word>
-        """
-        # Pad thing to look for
-        # We pad so we don't match 'shit' when searching for 'hit', etc.
-        context = " " + context + " "
-        # Search through contexts
-        # count deleted items
-        dellist = []
-        # words that will have broken context due to this
-        wordlist = []
-        for x in self.lines.keys():
-            # get context. pad
-            c = " " + self.lines[x][0] + " "
-            if c.find( context ) != -1:
-                # Split line up
-                wlist = self.lines[x][0].split()
-                # add touched words to list
-                for w in wlist:
-                    if not w in wordlist:
-                        wordlist.append( w )
-                dellist.append( x )
-                del self.lines[x]
-        words = self.words
-        unpack = struct.unpack
-        # update links
-        for x in wordlist:
-            word_contexts = words[x]
-            # Check all the word's links (backwards so we can delete)
-            for y in xrange( len( word_contexts ) - 1, -1, -1 ):
-                # Check for any of the deleted contexts
-                if unpack( "lH", word_contexts[y] )[0] in dellist:
-                    del word_contexts[y]
-                    self.settings.num_contexts = self.settings.num_contexts - 1
-            if len( words[x] ) == 0:
-                del words[x]
-                self.settings.num_words = self.settings.num_words - 1
-                print "\"%s\" vaped totally" % x
+    def reply(self, body):
+        return self.brain.reply(body)
 
-    def reply( self, body ):
-        """
-        Reply to a line of text.
-        """
-        # split sentences into list of words
-        _words = body.split( " " )
-        words = []
-        for i in _words:
-            words += i.split()
-        del _words
-
-        if len( words ) == 0:
-            return ""
-
-        #remove words on the ignore list
-        #words = filter((lambda x: x not in self.settings.ignore_list and not x.isdigit() ), words)
-        words = ( x for x in words if x not in self.settings.ignore_list and not x.isdigit() )
-
-        # Find rarest word (excluding those unknown)
-        index = []
-        known = -1
-        #The word has to be seen in already 3 contexts differents for being choosen
-        known_min = 3
-        for x in  words:
-            if self.words.has_key( x ):
-                k = len( self.words[x] )
-            else:
-                continue
-            if ( known == -1 or k < known ) and k > known_min:
-                index = [x]
-                known = k
-                continue
-            elif k == known:
-                index.append( x )
-                continue
-        # Index now contains list of rarest known words in sentence
-        if len( index ) == 0:
-            return ""
-        word = index[random.randint( 0, len( index ) - 1 )]
-
-        # Build sentence backwards from "chosen" word
-        sentence = [word]
-        done = 0
-        while done == 0:
-            #create a dictionary wich will contain all the words we can found before the "chosen" word
-            pre_words = {"" : 0}
-            #this is for prevent the case when we have an ignore_listed word
-            word = str( sentence[0].split( " " )[0] )
-            for x in xrange( 0, len( self.words[word] ) - 1 ):
-                l, w = struct.unpack( "lH", self.words[word][x] )
-                context = self.lines[l][0]
-                num_context = self.lines[l][1]
-                cwords = context.split()
-                #if the word is not the first of the context, look the previous one
-                if cwords[w] != word:
-                    print context
-                if w:
-                    #look if we can found a pair with the choosen word, and the previous one
-                    if len( sentence ) > 1 and len( cwords ) > w + 1:
-                        if sentence[1] != cwords[w + 1]:
-                            continue
-
-                    #if the word is in ignore_list, look the previous word
-                    look_for = cwords[w - 1]
-                    if look_for in self.settings.ignore_list and w > 1:
-                        look_for = cwords[w - 2] + " " + look_for
-
-                    #saves how many times we can found each word
-                    if not( pre_words.has_key( look_for ) ):
-                        pre_words[look_for] = num_context
-                    else :
-                        pre_words[look_for] += num_context
-
-                else:
-                    pre_words[""] += num_context
-
-            #Sort the words
-            liste = pre_words.items()
-            liste.sort( lambda x, y: cmp( y[1], x[1] ) )
-
-            numbers = [liste[0][1]]
-            for x in xrange( 1, len( liste ) ):
-                numbers.append( liste[x][1] + numbers[x - 1] )
-
-            #take one them from the list ( randomly )
-            mot = random.randint( 0, numbers[len( numbers ) - 1] )
-            for x in xrange( 0, len( numbers ) ):
-                if mot <= numbers[x]:
-                    mot = liste[x][0]
-                    break
-
-            #if the word is already choosen, pick the next one
-            while mot in sentence:
-                x += 1
-                if x >= len( liste ) - 1:
-                    mot = ''
-                mot = liste[x][0]
-
-            mot = mot.split( " " )
-            mot.reverse()
-            if mot == ['']:
-                done = 1
-            else:
-                #map( ( lambda x: sentence.insert( 0, x ) ), mot )
-                [sentence.insert( 0, x ) for x in mot]
-
-        pre_words = sentence
-        sentence = sentence[-2:]
-
-        # Now build sentence forwards from "chosen" word
-
-        #We've got
-        #cwords:    ...    cwords[w-1]    cwords[w]    cwords[w+1]    cwords[w+2]
-        #sentence:    ...    sentence[-2]    sentence[-1]    look_for    look_for ?
-
-        #we are looking, for a cwords[w] known, and maybe a cwords[w-1] known, what will be the cwords[w+1] to choose.
-        #cwords[w+2] is need when cwords[w+1] is in ignored list
-
-
-        done = 0
-        while done == 0:
-            #create a dictionary wich will contain all the words we can found before the "chosen" word
-            post_words = {"" : 0}
-            word = str( sentence[-1].split( " " )[-1] )
-            for x in self.words[word]:
-                l, w = struct.unpack( "lH", x )
-                context = self.lines[l][0]
-                num_context = self.lines[l][1]
-                cwords = context.split()
-                #look if we can found a pair with the choosen word, and the next one
-                if len( sentence ) > 1:
-                    if sentence[len( sentence ) - 2] != cwords[w - 1]:
-                        continue
-
-                if w < len( cwords ) - 1:
-                    #if the word is in ignore_list, look the next word
-                    look_for = cwords[w + 1]
-                    if look_for in self.settings.ignore_list and w < len( cwords ) - 2:
-                        look_for = look_for + " " + cwords[w + 2]
-
-                    if not( post_words.has_key( look_for ) ):
-                        post_words[look_for] = num_context
-                    else :
-                        post_words[look_for] += num_context
-                else:
-                    post_words[""] += num_context
-            #Sort the words
-            liste = post_words.items()
-            liste.sort( lambda x, y: cmp( y[1], x[1] ) )
-            numbers = [liste[0][1]]
-
-            for x in xrange( 1, len( liste ) ):
-                numbers.append( liste[x][1] + numbers[x - 1] )
-
-            #take one them from the list ( randomly )
-            mot = random.randint( 0, numbers[len( numbers ) - 1] )
-            for x in xrange( 0, len( numbers ) ):
-                if mot <= numbers[x]:
-                    mot = liste[x][0]
-                    break
-
-            x = -1
-            while mot in sentence:
-                x += 1
-                if x >= len( liste ) - 1:
-                    mot = ''
-                    break
-                mot = liste[x][0]
-
-
-            mot = mot.split( " " )
-            if mot == ['']:
-                done = 1
-            else:
-                [ sentence.append( x ) for x in mot]
-                #map( ( lambda x: sentence.append( x ) ), mot )
-
-        sentence = pre_words[:-2] + sentence
-
-        #Replace aliases
-        for x in xrange( 0, len( sentence ) ):
-            if sentence[x][0] == "~":
-                sentence[x] = sentence[x][1:]
-
-        #Insert space between each words
-        #map( ( lambda x: sentence.insert( 1 + x * 2, " " ) ), xrange( 0, len( sentence ) - 1 ) )
-        [sentence.insert( 1 + x * 2, " " ) for x in xrange( 0, len( sentence ) - 1 )]
-
-        #correct the ' & , spaces problem
-        #code is not very good and can be improve but does his job...
-        for x in xrange( 0, len( sentence ) ):
-            if sentence[x] == "'":
-                sentence[x - 1] = ""
-                sentence[x + 1] = ""
-            for split_char in ['?', '!', ',']:
-                if sentence[x] == split_char:
-                    sentence[x - 1] = ""
-
-        #return as string..
-        return "".join( sentence )
-
-    def learn( self, body, num_context = 1 ):
-        """
-        Lines should be cleaned (filter_message()) before passing
-        to this.
-        """
-
-        def learn_line( self, body, num_context ):
-            """
-            Learn from a sentence.
-            """
-
-            words = body.split()
-            # Ignore sentences of < 1 words XXX was < 3
-            if len( words ) < 1:
-                return
-
-            voyelles = "aÃ Ã¢eÃ©Ã¨ÃªiÃ®Ã¯oÃ¶Ã´uÃ¼Ã»y"
-            for x in xrange( 0, len( words ) ):
-
-                nb_voy = 0
-                digit = 0
-                char = 0
-                for c in words[x]:
-                    if c in voyelles:
-                        nb_voy += 1
-                    if c.isalpha():
-                        char += 1
-                    if c.isdigit():
-                        digit += 1
-
-                for censored in self.settings.censored:
-                    pattern = "^%s$" % censored
-                    if re.search( pattern, words[x] ):
-                        print "Censored word %s" % words[x]
-                        return
-
-                if len( words[x] ) > 13 \
-                or ( ( ( nb_voy * 100 ) / len( words[x] ) < 26 ) and len( words[x] ) > 5 ) \
-                or ( char and digit ) \
-                or ( self.words.has_key( words[x] ) == 0 and self.settings.learning == 0 ):
-                    #if one word as more than 13 characters, don't learn
-                    #        ( in french, this represent 12% of the words )
-                    #and don't learn words where there are less than 25% of voyels
-                    #don't learn the sentence if one word is censored
-                    #don't learn too if there are digits and char in the word
-                    #same if learning is off
-                    return
-                elif ( "-" in words[x] or "_" in words[x] ) :
-                    words[x] = "#nick"
-
-
-            num_w = self.settings.num_words
-            if num_w != 0:
-                num_cpw = self.settings.num_contexts / float( num_w ) # contexts per word
-            else:
-                num_cpw = 0
-
-            cleanbody = " ".join( words )
-
-            # Hash collisions we don't care about. 2^32 is big :-)
-            hashval = hash( cleanbody )
-
-            # Check context isn't already known
-            if not self.lines.has_key( hashval ):
-                if not( num_cpw > 100 and self.settings.learning == 0 ):
-
-                    self.lines[hashval] = [cleanbody, num_context]
-                    # Add link for each word
-                    for x in xrange( 0, len( words ) ):
-                        if self.words.has_key( words[x] ):
-                            # Add entry. (line number, word number)
-                            self.words[words[x]].append( struct.pack( "lH", hashval, x ) )
-                        else:
-                            self.words[words[x]] = [ struct.pack( "lH", hashval, x ) ]
-                            self.settings.num_words += 1
-                        self.settings.num_contexts += 1
-            else :
-                self.lines[hashval][1] += num_context
-
-            #is max_words reached, don't learn more
-            if self.settings.num_words >= self.settings.max_words:
-                self.settings.learning = 0
-
-        # Split body text into sentences and parse them
-        # one by one.
-        body += " "
-        #map ( ( lambda x : learn_line( self, x, num_context ) ), body.split( ". " ) )
-        [learn_line( self, x, num_context ) for x in body.split( ". " )]
+    def learn(self, body):
+        return self.brain.learn(body)
