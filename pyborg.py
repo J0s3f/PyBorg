@@ -171,13 +171,10 @@ class PyborgBrain(Brain):
         if len(self.words) != self.settings.num_words:
             self.log.info("Re-counting words and contexts (settings reported %d but counted %d)...",
                 self.settings.num_words, len(self.words))
+
             self.settings.num_words = len(self.words)
-            num_contexts = 0
-            # Get number of contexts
-            for x in self.lines.keys():
-                num_contexts += len(self.lines[x][0].split())
-            self.settings.num_contexts = num_contexts
-            # Save new values
+            self.settings.num_contexts = sum(len(line[0].split()) for line in self.lines.itervalues())
+
             self.settings.save()
 
         # Is an aliases update required ?
