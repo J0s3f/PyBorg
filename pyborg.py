@@ -140,32 +140,32 @@ class PyborgBrain(Brain):
         self.log.info("Reading dictionary...")
         try:
             zfile = zipfile.ZipFile('archive.zip', 'r')
-            for filename in zfile.namelist():
-                data = zfile.read(filename)
-                data_file = open(filename, 'w+b')
-                data_file.write(data)
-                data_file.close()
         except (EOFError, IOError):
             self.log.debug("No archive.zip found to unarchive")
+        else:
+            # Unarchive all the files from the zip.
+            for filename in zfile.namelist():
+                data = zfile.read(filename)
+                with open(filename, 'w+b') as data_file:
+                    data_file.write(data)
 
         try:
-            content = self.read_file("version")
+            with open('version', 'rb') as version_file:
+                content = version_file.read()
             if content != self.saves_version:
                 self.log.error("Dictionary is version %s but version %s is required. Please convert the dictionary.",
                     content, self.saves_version)
+                # TODO: use an exception here
                 sys.exit(1)
 
-            content = self.read_file("words.dat")
-            self.words = marshal.loads(content)
-            del content
-            content = self.read_file("lines.dat")
-            self.lines = marshal.loads(content)
-            del content
+            with open('words.dat', 'rb') as words_file:
+                self.words = marshal.load(words_file)
+            with open('lines.dat', 'rb') as lines_file:
+                self.lines = marshal.load(lines_file)
         except (EOFError, IOError):
-            # Create mew database
+            self.log.info("Couldn't read saved dictionary, so using a new database.")
             self.words = {}
             self.lines = {}
-            self.log.info("Couldn't read saved dictionary, so using a new database.")
 
         # Is a resizing required?
         if len(self.words) != self.settings.num_words:
@@ -205,18 +205,15 @@ class PyborgBrain(Brain):
                     self.unlearn(x)
                     print "unlearned aliases %s" % x
 
-        #unlearn words in the unlearn.txt file.
+        # Unlearn words in the unlearn.txt file.
         try:
-            f = open("unlearn.txt", "r")
-            while 1:
-                word = f.readline().strip('\n')
-                if word == "":
-                    break
-                if self.words.has_key(word):
-                    self.unlearn(word)
-            f.close()
+            with open('unlearn.txt', 'r') as unlearn_file:
+                for word in unlearn_file:
+                    word = word.strip()
+                    if word and word in self.words:
+                        self.unlearn(word)
         except (EOFError, IOError):
-            # No words to unlearn
+            # No words to unlearn.
             pass
 
     def save(self):
@@ -225,36 +222,18 @@ class PyborgBrain(Brain):
 
         self.log.info("Writing dictionary...")
 
-        try:
-            zfile = zipfile.ZipFile('archive.zip', 'r')
-            for filename in zfile.namelist():
-                data = zfile.read(filename)
-                file = open(filename, 'w+b')
-                file.write(data)
-                file.close()
-        except (OSError, IOError), e:
-            print "no zip found. Is the programm launch for first time ?"
+        with open('words.dat', 'wb') as words_file:
+            marshal.dump(self.words, words_file)
+        with open('lines.dat', 'wb') as lines_file:
+            marshal.dump(self.lines, lines_file)
+        with open('version', 'w') as version_file:
+            version_file.write(self.saves_version)
 
-        f = open("words.dat", "wb")
-        s = marshal.dumps(self.words)
-        f.write(s)
-        f.close()
-        f = open("lines.dat", "wb")
-        s = marshal.dumps(self.lines)
-        f.write(s)
-        f.close()
-
-        # save the version
-        f = open("version", "w")
-        f.write(self.saves_version)
-        f.close()
-
-        # zip the files
-        f = zipfile.ZipFile('archive.zip', 'w', zipfile.ZIP_DEFLATED)
-        f.write('words.dat')
-        f.write('lines.dat')
-        f.write('version')
-        f.close()
+        archive = zipfile.ZipFile('archive.zip', 'w', zipfile.ZIP_DEFLATED)
+        archive.write('words.dat')
+        archive.write('lines.dat')
+        archive.write('version')
+        archive.close()
 
         try:
             os.remove('words.dat')
@@ -263,16 +242,12 @@ class PyborgBrain(Brain):
         except (OSError, IOError), e:
             self.log.error("Couldn't remove dictionary files: %s", str(e))
 
-        f = open("words.txt", "w")
-        # write each words known
-        wordlist = []
-        #Sort the list befor to export
-        for key in self.words.keys():
-            wordlist.append([key, len(self.words[key])])
-        wordlist.sort(lambda x, y: cmp(x[1], y[1]))
-        #map((lambda x: f.write(str(x[0]) + "\n\r")), wordlist)
-        [f.write(str(x[0]) + "\n\r") for x in wordlist]
-        f.close()
+        # Write out all the words, sorted by number of contexts.
+        words = sorted(self.words.keys(), key=lambda w: len(self.words[w]))
+        with open('words.txt', 'w') as words_file:
+            for word in words:
+                words_file.write(word)
+                words_file.write('\n')
 
     def learn_sentence(self, body, num_context):
         """
@@ -661,31 +636,17 @@ class Pyborg(object):
 
         self.settings.save()
 
-    @staticmethod
-    def read_file(file_name):
-        """ Return the content of a File
-        """
-        _file = open(file_name, "rb")
-        data = _file.read()
-        _file.close()
-        return data
-
     def save_all(self):
         if self.settings.no_save:
             return
 
         self.brain.save()
 
-        f = open("sentences.txt", "w")
-        # write each words known
-        wordlist = []
-        #Sort the list befor to export
-        for key in self.unfilterd.keys():
-            wordlist.append([key, self.unfilterd[key]])
-        wordlist.sort(lambda x, y: cmp(y[1], x[1]))
-        #map((lambda x: f.write(str(x[0]) + "\n")), wordlist)
-        [f.write(str(x[0]) + "\n") for x in wordlist]
-        f.close()
+        sentence_list = sorted((sentence for sentence in self.unfilterd.iteritems()), key=lambda s: s[1])
+        with open('sentences.txt', 'w') as sentence_file:
+            for word, count in sentence_list:
+                sentence_file.write(word)
+                sentence_file.write('\n')
 
         self.settings.save()
 
