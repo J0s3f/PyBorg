@@ -25,14 +25,15 @@
 # Seb Dailly <seb.dailly@gmail.com>
 """
 
-import random
-import sys
-import os
+import logging
 import marshal    # buffered marshal is bloody fast. wish i'd found this before :)
+import os
+import random
+import re
 import struct
+import sys
 import time
 import zipfile
-import re
 
 from cfgfile import Setting, Settings
 
@@ -133,10 +134,12 @@ class PyborgBrain(Brain):
 
     saves_version = "1.1.0"
 
+    log = logging.getLogger('PyborgBrain')
+
     def __init__(self, settings):
         super(PyborgBrain, self).__init__(settings)
 
-        print "Reading dictionary..."
+        self.log.info("Reading dictionary...")
         try:
             zfile = zipfile.ZipFile( 'archive.zip', 'r' )
             for filename in zfile.namelist():
@@ -145,12 +148,13 @@ class PyborgBrain(Brain):
                 data_file.write( data )
                 data_file.close()
         except ( EOFError, IOError ):
-            print "no zip found"
+            self.log.debug("No archive.zip found to unarchive")
         try:
 
             content = self.read_file( "version" )
             if content != self.saves_version:
-                print "Error loading dictionary\Please convert it before launching pyborg"
+                self.log.error("Dictionary is version %s but version %s is required. Please convert the dictionary.",
+                    content, self.saves_version)
                 sys.exit( 1 )
 
             content = self.read_file( "words.dat" )
@@ -163,11 +167,12 @@ class PyborgBrain(Brain):
             # Create mew database
             self.words = {}
             self.lines = {}
-            print "Error reading saves. New database created."
+            self.log.info("Couldn't read saved dictionary, so using a new database.")
 
         # Is a resizing required?
         if len( self.words ) != self.settings.num_words:
-            print "Updating dictionary information..."
+            self.log.info("Re-counting words and contexts (settings reported %d but counted %d)...",
+                self.settings.num_words, len(self.words))
             self.settings.num_words = len( self.words )
             num_contexts = 0
             # Get number of contexts
@@ -218,7 +223,10 @@ class PyborgBrain(Brain):
             pass
 
     def save(self):
-        print "Writing dictionary..."
+        if self.settings.no_save:
+            return
+
+        self.log.info("Writing dictionary...")
 
         try:
             zfile = zipfile.ZipFile( 'archive.zip', 'r' )
@@ -258,7 +266,7 @@ class PyborgBrain(Brain):
             os.remove( 'lines.dat' )
             os.remove( 'version' )
         except ( OSError, IOError ), e:
-            print "could not remove the files"
+            self.log.error("Couldn't remove dictionary files: %s", str(e))
 
         f = open( "words.txt", "w" )
         # write each words known
@@ -298,7 +306,7 @@ class PyborgBrain(Brain):
             for censored in self.settings.censored:
                 pattern = "^%s$" % censored
                 if re.search( pattern, words[x] ):
-                    print "Censored word %s" % words[x]
+                    self.log.debug("Censored word %s", words[x])
                     return
 
             if len( words[x] ) > 13 \
@@ -399,7 +407,7 @@ class PyborgBrain(Brain):
             if len( words[x] ) == 0:
                 del words[x]
                 self.settings.num_words = self.settings.num_words - 1
-                print "\"%s\" vaped totally" % x
+                self.log.info("\"%s\" vaped totally", x)
 
     def reply(self, body):
         """
