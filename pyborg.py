@@ -25,6 +25,8 @@
 # Seb Dailly <seb.dailly@gmail.com>
 """
 
+from __future__ import division
+
 from itertools import izip, count
 import logging
 import marshal    # buffered marshal is bloody fast. wish i'd found this before :)
@@ -269,7 +271,7 @@ class PyborgBrain(Brain):
             if not self.settings.learning and word not in self.words:
                 self.log.debug("Not learning a sentence: learning is off and %r is a new word", word)
                 return
-            if len(word) > 13:
+            if len(word) > self.settings.max_word_length:
                 self.log.debug("Not learning a sentence: word %r is too long", word)
                 return
 
@@ -285,7 +287,7 @@ class PyborgBrain(Brain):
             if chars and digits:
                 self.log.debug("Not learning a sentence: word %r is mixed alphanumeric", word)
                 return
-            if len(word) > 5 and vowels // len(word) < 0.25:
+            if chars and len(word) > 5 and vowels / len(word) < self.settings.min_vowel_ratio:
                 self.log.debug("Not learning a sentence: word %r has too few vowels (%.2f)", word, num_vowels // len(word))
                 return
 
@@ -357,14 +359,13 @@ class PyborgBrain(Brain):
                 dellist.append(x)
                 del self.lines[x]
         words = self.words
-        unpack = struct.unpack
         # update links
         for x in wordlist:
             word_contexts = words[x]
             # Check all the word's links (backwards so we can delete)
             for y in xrange(len(word_contexts) - 1, -1, -1):
                 # Check for any of the deleted contexts
-                if unpack("lH", word_contexts[y])[0] in dellist:
+                if struct.unpack("lH", word_contexts[y])[0] in dellist:
                     del word_contexts[y]
                     self.settings.num_contexts = self.settings.num_contexts - 1
             if len(words[x]) == 0:
@@ -608,6 +609,8 @@ class Pyborg(object):
             'ignore_list': Setting("Words to ignore for the answer", ['!.', '?.', "'", ',', ';']),
             'learning': Setting("If True, the bot will learn new words", True),
             'max_words': Setting("Max number of words to learn", 6000),
+            'max_word_length': Setting("Max number of characters a word can have to learn it", 13),
+            'min_vowel_ratio': Setting("Min ratio of vowels to characters a word can have to learn it", 0.25),
             'no_save': Setting("If True, don't overwrite the dictionary and configuration on disk", False),
             'num_aliases': Setting("Total known aliases", 0),
             'num_contexts': Setting("Total word contexts", 0),
