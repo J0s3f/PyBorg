@@ -19,10 +19,12 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #
+
 import string
 import sys
 
 import pyborg
+
 
 class ModLineIn:
     """
@@ -70,13 +72,11 @@ class ModLineIn:
         message = message.replace("#nick", args)
         print message
 
+
 if __name__ == "__main__":
-    # start the pyborg
-    my_pyborg = pyborg.pyborg()
+    my_pyborg = pyborg.Pyborg()
     try:
         ModLineIn(my_pyborg)
     except SystemExit:
         pass
     my_pyborg.save_all()
-    del my_pyborg
-
