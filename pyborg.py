@@ -703,93 +703,80 @@ class PyborgBrain(Brain):
         # This is a large lump of data and should
         # probably be printed, not module.output XXX
 
-        # build context we are looking for
-        context = " ".join(command_args)
-        context = context.lower()
-        if context == "":
+        if not command_args:
             return
-        io_module.output("Contexts containing \"" + context + "\":", args)
-        # Build context list
-        # Pad it
+        context = ' '.join(command_args).lower()
+
+        io_module.output("Contexts containing '%s':" % context, args)
+
         context = " " + context + " "
-        c = []
+        lines = set()
         # Search through contexts
-        for x in self.lines.keys():
-            # get context
-            ctxt = self.lines[x][0]
-            # add leading whitespace for easy sloppy search code
-            ctxt = " " + ctxt + " "
-            if ctxt.find(context) != -1:
-                # Avoid duplicates (2 of a word
-                # in a single context)
-                if len(c) == 0:
-                    c.append(self.lines[x][0])
-                elif c[len(c) - 1] != self.lines[x][0]:
-                    c.append(self.lines[x][0])
-        x = 0
-        while x < 5:
-            if x < len(c):
-                io_module.output(c[x], args)
-            x += 1
-        if len(c) == 5:
+        # Would be nice not to have find *all* the contexts, but we want their number.
+        for line_text, line_contexts in self.lines.itervalues():
+            line_text = " " + line_text + " "
+            if context in line_text:
+                lines.add(line_text)
+
+        # If there are only a few contexts, show them all.
+        # ("1 skipped" would be silly so show 16 if there are 16.)
+        if len(lines) <= 16:
+            for line in lines:
+                io_module.output(line, args)
             return
-        if len(c) > 10:
-            io_module.output("...(" + `len( c ) - 10` + " skipped)...", args)
-        x = len(c) - 5
-        if x < 5:
-            x = 5
-        while x < len(c):
-            io_module.output(c[x], args)
-            x += 1
+
+        # There may be a lot of contexts, so show only the "first" five and "last" ten.
+        these_lines = list(islice(lines, 15))
+        for line in these_lines[:5]:
+            io_module.output(line, args)
+        io_module.output('...(%d skipped)...' % len(lines) - 15, args)
+        for line in these_lines[5:]:
+            io_module.output(line, args)
 
     @owner_command
     def unlearn(self, io_module, command_args, args):
-        # build context we are looking for
-        context = " ".join(command_args)
-        context = context.lower()
-        if context == "":
+        if not command_args:
             return
-        print "Looking for: " + context
-        # Unlearn contexts containing 'context'
+        context = " ".join(command_args).lower()
+        self.log.debug("Looking to unlearn %r", context)
+
         t = time.time()
+        num_lines = len(self.lines)
         self.unlearn_word(context)
-        # we don't actually check if anything was
-        # done..
-        msg = "Unlearn done in %0.2fs" % (time.time() - t)
-        return msg
+        unlearned = num_lines - len(self.lines)
+        return "Unlearned %d contexts in %0.2fs." % (unlearned, time.time() - t)
 
     @owner_command
     def censor(self, io_module, command_args, args):
-        # no arguments. list censored words
         if not command_args:
-            if len(self.settings.censored) == 0:
-                msg = "No words censored"
+            if not self.settings.censored:
+                return "No words are censored."
+            return "I will not use the words: %s" % ", ".join(self.settings.censored)
+
+        messages = list()
+        for word in command_args:
+            word = word.lower()
+            if word in self.settings.censored:
+                messages.append("%s is already censored." % word)
             else:
-                msg = "I will not use the word(s) %s" % ", ".join(self.settings.censored)
-        # add every word listed to censored list
-        else:
-            for word in command_args:
-                if word in self.settings.censored:
-                    msg += "%s is already censored" % word
-                else:
-                    self.settings.censored.append(word.lower())
-                    self.unlearn_word(word)
-                    msg += "done"
-                msg += "\n"
-        return msg
+                self.settings.censored.append(word)
+                self.unlearn_word(word)
+                messages.append("Censored and unlearned %s." % word)
+        return '\n'.join(messages)
 
     @owner_command
     def uncensor(self, io_module, command_args, args):
         # Remove everyone listed from the ignore list
         # eg !unignore tom dick harry
-        msg = ""
+        messages = list()
         for word in command_args:
+            word = word.lower()
             try:
                 self.settings.censored.remove(word.lower())
-                msg = "done"
+                messages.append("Uncensored %s." % word)
             except ValueError:
-                pass
-        return msg
+                messages.append("%s was already not censored." % word)
+        return '\n'.join(messages)
 
 
 class Pyborg(object):
