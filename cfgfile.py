@@ -77,15 +77,8 @@ class Settings(object):
         """
         Save borg settings
         """
-        keys = {}
-        for i in self.__dict__.keys():
-            # reserved
-            if i.startswith('_'):
-                continue
-            if self._defaults.has_key(i):
-                comment = self._defaults[i][0]
-            else:
-                comment = ""
-            keys[i] = (comment, self.__dict__[i])
-        # save to config file
+        keys = dict()
+        for name, default in self._defaults.iteritems():
+            value = getattr(self, name, None)
+            keys[name] = Setting(default.comment, value)
         _save_config(self._filename, keys)
