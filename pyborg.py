@@ -337,40 +337,38 @@ class PyborgBrain(Brain):
         is a single word then all contexts containing that word
         will be removed, just like the old !unlearn <word>
         """
+        # We need only search lines that contain the words in the context.
+        context_words = context.split()
+        if not context_words:
+            self.log.debug("No words to unlearn!")
+            return
+        first_word = context_words[0]
+        lines_to_search = (struct.unpack("lH", ctx)[0] for ctx in self.words[first_word])
+
         # Pad thing to look for
         # We pad so we don't match 'shit' when searching for 'hit', etc.
         context = " " + context + " "
-        # Search through contexts
-        # count deleted items
-        dellist = []
-        # words that will have broken context due to this
-        wordlist = []
-        for x in self.lines.keys():
-            # get context. pad
-            c = " " + self.lines[x][0] + " "
+
+        words_to_repair = set()
+        for line_hash in lines_to_search:
+            line_text, line_contexts = self.lines[line_hash]
+            c = " " + line_text + " "
             if c.find(context) != -1:
-                # Split line up
-                wlist = self.lines[x][0].split()
-                # add touched words to list
-                for w in wlist:
-                    if not w in wordlist:
-                        wordlist.append(w)
-                dellist.append(x)
-                del self.lines[x]
-        words = self.words
-        # update links
-        for x in wordlist:
-            word_contexts = words[x]
-            # Check all the word's links (backwards so we can delete)
-            for y in xrange(len(word_contexts) - 1, -1, -1):
-                # Check for any of the deleted contexts
-                if struct.unpack("lH", word_contexts[y])[0] in dellist:
-                    del word_contexts[y]
-                    self.settings.num_contexts = self.settings.num_contexts - 1
-            if len(words[x]) == 0:
-                del words[x]
-                self.settings.num_words = self.settings.num_words - 1
-                self.log.info("\"%s\" vaped totally", x)
+                words_to_repair.update(line_text.split())
+                del self.lines[line_hash]
+
+        for word in words_to_repair:
+            word_contexts = self.words[word]
+            num_contexts = len(word_contexts)
+            word_contexts = list(ctx for ctx in word_contexts if struct.unpack("lH", ctx)[0] in self.lines)
+            self.settings.num_contexts -= num_contexts - len(word_contexts)
+
+            if word_contexts:
+                self.words[word] = word_contexts
+            else:
+                del self.words[word]
+                self.settings.num_words -= 1
+                self.log.info("Unlearned all contexts for word %r", word)
 
     def reply(self, body):
         """
