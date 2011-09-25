@@ -26,7 +26,7 @@
 
 from __future__ import division
 
-from itertools import izip, count
+from itertools import count, islice, izip
 import logging
 import marshal    # buffered marshal is bloody fast. wish i'd found this before :)
 import os
@@ -343,6 +343,9 @@ class PyborgBrain(Brain):
             self.log.debug("No words to unlearn!")
             return
         first_word = context_words[0]
+        if first_word not in self.words:
+            self.log.debug("Already unlearned all possible contexts for %r", first_word)
+            return
         lines_to_search = (struct.unpack("lH", ctx)[0] for ctx in self.words[first_word])
 
         # Pad thing to look for
@@ -604,68 +607,50 @@ class PyborgBrain(Brain):
     def rebuilddict(self, io_module, command_args, args):
         # Rebuild the dictionary by discarding the word links and
         # re-parsing each line
-        if self.settings.learning == 1:
-            t = time.time()
+        if not self.settings.learning:
+            return "Not learning, so not rebuilding."
 
-            old_lines = self.lines
-            old_num_words = self.settings.num_words
-            old_num_contexts = self.settings.num_contexts
+        t = time.time()
 
-            self.words = {}
-            self.lines = {}
-            self.settings.num_words = 0
-            self.settings.num_contexts = 0
+        old_lines = self.lines.values()
+        old_num_words = self.settings.num_words
+        old_num_contexts = self.settings.num_contexts
 
-            for k in old_lines.keys():
-                self.learn(old_lines[k][0], old_lines[k][1])
+        self.words = {}
+        self.lines = {}
+        self.settings.num_words = 0
+        self.settings.num_contexts = 0
 
-            return "Rebuilt dictionary in %0.2fs. Words %d (%+d), contexts %d (%+d)" % \
-                (time.time() - t, old_num_words, self.settings.num_words - old_num_words,
-                old_num_contexts, self.settings.num_contexts - old_num_contexts)
+        for line_text, line_contexts in old_lines:
+            self.learn(line_text, line_contexts)
+
+        return "Rebuilt dictionary in %0.2fs. Words %d (%+d), contexts %d (%+d)" % (
+            time.time() - t, old_num_words, self.settings.num_words - old_num_words,
+            old_num_contexts, self.settings.num_contexts - old_num_contexts)
 
     @owner_command
     def purge(self, io_module, command_args, args):
         # Remove rare words.
         t = time.time()
 
-        liste = []
-        compteur = 0
+        def is_rare_word(word, contexts):
+            if len(contexts) < 2:
+                return True
+            if word.isalnum() and not (word.isdigit() or word.isalpha()):
+                return True
+            return False
 
-        if command_args:
-            # limite d occurences a effacer
-            c_max = command_args[0].lower()
-        else:
-            c_max = 0
+        rare_words = (word for word, contexts in self.words.iteritems() if is_rare_word(word, contexts))
 
-        c_max = int(c_max)
+        if not command_args:
+            return "There are %d possible rare (and alphanumeric) words to remove." % len(list(rare_words))
 
-        for w in self.words.keys():
-            digit = 0
-            char = 0
-            for c in w:
-                if c.isalpha():
-                    char += 1
-                if c.isdigit():
-                    digit += 1
+        num_words_to_unlearn = int(command_args[0])
+        words_to_unlearn = list(islice(rare_words, num_words_to_unlearn))
+        for word in words_to_unlearn:
+            self.unlearn_word(word)
 
-            #Compte les mots inferieurs a cette limite
-            c = len(self.words[w])
-            if c < 2 or (digit and char):
-                liste.append(w)
-                compteur += 1
-                if compteur == c_max:
-                    break
-
-        if c_max < 1:
-            #io_module.output(str(compteur)+" words to remove", args)
-            io_module.output("%s words to remove" % compteur, args)
-            return
-
-        #supprime les mots
-        [self.unlearn_word( w ) for w in liste[0:]]
-
-        return "Purge dictionary in %0.2fs. %d words removed" % \
-            (time.time() - t, compteur)
+        return "Unlearned %d rare words in %0.2fs." % (len(words_to_unlearn), time.time() - t)
 
     @owner_command
     def replace(self, io_module, command_args, args):
