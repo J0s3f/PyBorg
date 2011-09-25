@@ -501,39 +501,38 @@ class PyborgBrain(Brain):
 
         return result_sentence
 
-    def replace_word(self, old, new):
+    def replace_word(self, old_word, new_word):
         """
         Replace all occuraces of 'old' in the dictionary with
         'new'. Nice for fixing learnt typos.
         """
         try:
-            pointers = self.words[old]
+            contexts = self.words[old_word]
         except KeyError:
             return old + " not known."
         changed = 0
 
-        for x in pointers:
-            # pointers consist of (line, word) to self.lines
-            l, w = struct.unpack("lH", x)
-            line = self.lines[l][0].split()
-            number = self.lines[l][1]
-            if line[w] != old:
-                # fucked dictionary
-                print "Broken link: %s %s" % (x, self.lines[l][0])
-                continue
-            else:
-                line[w] = new
-                self.lines[l][0] = " ".join(line)
-                self.lines[l][1] += number
-                changed += 1
+        for context in contexts:
+            line_hash, word_index = struct.unpack("lH", context)
+            line_text, line_contexts = self.lines[line_hash]
+            line_words = line_text.split()
 
-        if self.words.has_key(new):
+            assert line_words[word_index] == old_word, 'Inconsistent context %r thought word %r was #%d' % (
+                line_hash, old_word, word_index)
+
+            line_words[word_index] = new_word
+            line_text = " ".join(line_words)
+            self.lines[line_hash][0] = line_text
+            changed += 1
+
+        if new_word in self.words:
             self.settings.num_words -= 1
-            self.words[new].extend(self.words[old])
+            self.words[new_word].extend(self.words[old_word])
         else:
-            self.words[new] = self.words[old]
-        del self.words[old]
-        return "%d instances of %s replaced with %s" % (changed, old, new)
+            self.words[new_word] = self.words[old_word]
+        del self.words[old_word]
+
+        return "%d instances of %s replaced with %s" % (changed, old_word, new_word)
 
     def known_words(self):
         num_w = self.settings.num_words
