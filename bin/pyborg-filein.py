@@ -47,7 +47,7 @@ class ModFileIn:
         logging.info("I knew %d words (%d lines) before reading %s",
             borg.settings.num_words, len(borg.brain.lines), filename)
 
-        buffer = pyborg.filter_message(buffer, borg)
+        buffer = borg.filter_message(buffer)
         try:
             borg.learn(buffer)
         except KeyboardInterrupt, e:

@@ -41,56 +41,44 @@ import zipfile
 from cfgfile import Setting, Settings
 
 
-def filter_message(message, bot):
-    """
-    Filter a message body so it is suitable for learning from and
-    replying to. This involves removing confusing characters,
-    padding ? and ! with ". " so they also terminate lines
-    and converting to lower case.
-    """
-    message = message.lower()
-
-    # remove garbage
-    replacements = {
-        '"': '',
-        "'": '',
-        '; ': ', ',
-        '?': ' ? ',
-        '!': ' ! ',
-        '.': ' . ',
-        ',': ' , ',
-        '#nick:': '#nick :',
-    }
-    for repl_from, repl_to in replacements.iteritems():
-        message = message.replace(repl_from, repl_to)
-
-    # remove matching brackets (unmatched ones are likely smileys :-) *cough*
-    # should except out when not found.
-    subs = -1
-    while subs != 0:
-        message, subs = re.subn(r'(?x) \( ([^)]*) \)', r'\1', message)
-
-    # No sense in keeping URLS
-    message = re.sub(r"https?://[^ ]* ", "", message)
-
-    words = message.split()
-    if bot.settings.process_with == "pyborg":
-        for x in xrange(0, len(words)):
-            #is there aliases ?
-            for z in bot.settings.aliases.keys():
-                for alias in bot.settings.aliases[z]:
-                    pattern = "^%s$" % alias
-                    if re.search(pattern, words[x]):
-                        words[x] = z
-
-    message = " ".join(words)
-    return message
-
-
 class Brain(object):
 
     def __init__(self, settings):
         self.settings = settings
+
+    def filter_message(self, message):
+        """
+        Filter a message body so it is suitable for learning from and
+        replying to. This involves removing confusing characters,
+        padding ? and ! with ". " so they also terminate lines
+        and converting to lower case.
+        """
+        message = message.lower()
+
+        # remove garbage
+        replacements = {
+            '"': '',
+            "'": '',
+            '; ': ', ',
+            '?': ' ? ',
+            '!': ' ! ',
+            '.': ' . ',
+            ',': ' , ',
+            '#nick:': '#nick :',
+        }
+        for repl_from, repl_to in replacements.iteritems():
+            message = message.replace(repl_from, repl_to)
+
+        # remove matching brackets (unmatched ones are likely smileys :-) *cough*
+        # should except out when not found.
+        subs = -1
+        while subs != 0:
+            message, subs = re.subn(r'(?x) \( ([^)]*) \)', r'\1', message)
+
+        # No sense in keeping URLS
+        message = re.sub(r"https?://[^ ]* ", "", message)
+        message = re.sub(r'\s+', ' ', message)
+        return message
 
     def learn(self, body):
         raise NotImplementedError
@@ -178,7 +166,7 @@ class PyborgBrain(Brain):
                     for z in self.settings.aliases.keys():
                         for alias in self.settings.aliases[z]:
                             pattern = "^%s$" % alias
-                            if self.re.search(pattern, x):
+                            if re.search(pattern, x):
                                 print "replace %s with %s" % (x, z)
                                 self.replace(x, z)
 
@@ -199,6 +187,24 @@ class PyborgBrain(Brain):
         except (EOFError, IOError):
             # No words to unlearn.
             pass
+
+    def apply_aliases(self, word):
+        for repl_word, patterns in self.settings.aliases.iteritems():
+            for pattern in patterns:
+                alias_re = re.compile(r'^%s$' % pattern)
+                if alias_re.match(word):
+                    # We should only care about the first alias, so returning out is fine.
+                    return repl_word
+        return word
+
+    def filter_message(self, message):
+        message = super(PyborgBrain, self).filter_message(message)
+        if not self.settings.aliases:
+            return message
+
+        words = message.split()
+        words = (self.apply_aliases(word) for word in words)
+        return ' '.join(words)
 
     def save(self):
         if self.settings.no_save:
@@ -648,7 +654,7 @@ class Pyborg(object):
             return
 
         # Filter out garbage and do some formatting
-        body = filter_message(body, self)
+        body = self.brain.filter_message(body)
 
         # Learn from input
         if learn == 1 and self.settings.learning:
