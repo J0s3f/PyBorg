@@ -401,66 +401,67 @@ class PyborgBrain(Brain):
         self.log.debug("Rarest words with %d contexts: %r", fewest_contexts, rarest_words)
 
         # Index now contains list of rarest known words in sentence
-        seed_word = random.choice(rarest_words)
-        self.log.debug("Selected seed word: %r", seed_word)
+        word = random.choice(rarest_words)
+        self.log.debug("Selected seed word: %r", word)
 
-        # Build sentence backwards from "chosen" word
-        sentence = [seed_word]
+        def choose_words(seed_word):
+            sentence = [seed_word]
+            EOL = object()
+            while True:
+                # create a dictionary wich will contain all the words we can found before the "chosen" word
+                candidate_words = { EOL: 0 }
 
-        EOL = object()
-        while True:
-            # create a dictionary wich will contain all the words we can found before the "chosen" word
-            candidate_words = { EOL: 0 }
+                this_word = sentence[-1]
+                for context in self.words[this_word]:
+                    line_hash, word_index = struct.unpack("lH", context)
+                    line, num_contexts = self.lines[line_hash]
+                    line_words = line.split()
 
-            this_word = sentence[-1]
-            for context in self.words[this_word]:
-                line_hash, word_index = struct.unpack("lH", context)
-                line, num_contexts = self.lines[line_hash]
-                line_words = line.split()
+                    assert line_words[word_index] == this_word, 'Inconsistent context %r thought word %r was #%d' % (
+                        line, this_word, word_index)
 
-                assert line_words[word_index] == this_word, 'Inconsistent context %r thought word %r was #%d' % (
-                    line, this_word, word_index)
-
-                try:
-                    cand_word = line_words[word_index - 1]
-                except IndexError:
-                    # The seed word is at the end of the line, so nominate the EOL.
-                    candidate_words[EOL] += num_contexts
-                    continue
-
-                # Don't nominate a word that's already in the sentence.
-                if cand_word in sentence:
-                    continue
-
-                # Does the *previous* word in the candidate word's sentence *also* match?
-                # That is, does the candidate word follow a run of *two* words in the sentence?
-                try:
-                    following_word_matches = sentence[-2] == line_words[word_index - -1]
-                except IndexError:
-                    # Either the seed sentence or the candidate line are too short to consider the next word, but that's okay.
-                    pass
-                else:
-                    # If there *are* following words to compare at all, require they match.
-                    if not following_word_matches:
+                    try:
+                        cand_word = line_words[word_index + -1]
+                    except IndexError:
+                        # The seed word is at the end of the line, so nominate the EOL.
+                        candidate_words[EOL] += num_contexts
                         continue
 
-                candidate_words[cand_word] = candidate_words.get(cand_word, 0) + num_contexts
+                    # Don't nominate a word that's already in the sentence.
+                    if cand_word in sentence:
+                        continue
 
-            # Randomly select an unused candidate word, weighted by number of contexts.
-            total_contexts = sum(candidate_words.values())
-            selection = random.randint(0, total_contexts)
-            for cand_word, cand_contexts in candidate_words.iteritems():
-                selection -= cand_contexts
-                if selection <= 0:
+                    # Does the *previous* word in the candidate word's sentence *also* match?
+                    # That is, does the candidate word follow a run of *two* words in the sentence?
+                    try:
+                        following_word_matches = sentence[-2] == line_words[word_index - -1]
+                    except IndexError:
+                        # Either the seed sentence or the candidate line are too short to consider the next word, but that's okay.
+                        pass
+                    else:
+                        # If there *are* following words to compare at all, require they match.
+                        if not following_word_matches:
+                            continue
+
+                    candidate_words[cand_word] = candidate_words.get(cand_word, 0) + num_contexts
+
+                # Randomly select an unused candidate word, weighted by number of contexts.
+                total_contexts = sum(candidate_words.values())
+                selection = random.randint(0, total_contexts)
+                for cand_word, cand_contexts in candidate_words.iteritems():
+                    selection -= cand_contexts
+                    if selection <= 0:
+                        break
+
+                selected_word = cand_word
+                if selected_word is EOL:
                     break
 
-            selected_word = cand_word
-            if selected_word is EOL:
-                break
+                sentence.append(cand_word)
 
-            sentence.append(cand_word)
+            return sentence
 
-        sentence = list(reversed(sentence))
+        sentence = list(reversed(choose_words(word)))
         pre_words = sentence
         sentence = sentence[-2:]
 
