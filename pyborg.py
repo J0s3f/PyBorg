@@ -151,40 +151,22 @@ class PyborgBrain(Brain):
             self.words = {}
             self.lines = {}
 
-        # Is a resizing required?
-        if len(self.words) != self.settings.num_words:
-            self.log.info("Re-counting words and contexts (settings reported %d but counted %d)...",
-                self.settings.num_words, len(self.words))
+        self.num_words = len(self.words)
+        self.num_contexts = sum(len(line[0].split()) for line in self.lines.itervalues())
 
-            self.settings.num_words = len(self.words)
-            self.settings.num_contexts = sum(len(line[0].split()) for line in self.lines.itervalues())
-
-            self.settings.save()
-
-        # Is an aliases update required ?
-        compteur = 0
-        for x in self.settings.aliases.keys():
-            compteur += len(self.settings.aliases[x])
-        if compteur != self.settings.num_aliases:
-            print "check dictionary for new aliases"
-            self.settings.num_aliases = compteur
-
-            for x in self.words.keys():
-                #is there aliases ?
-                if x[0] != '~':
-                    for z in self.settings.aliases.keys():
-                        for alias in self.settings.aliases[z]:
-                            pattern = "^%s$" % alias
-                            if re.search(pattern, x):
-                                print "replace %s with %s" % (x, z)
-                                self.replace_word(x, z)
-
-            for x in self.words.keys():
-                if not (x in self.settings.aliases.keys()) and x[0] == '~':
-                    print "unlearn %s" % x
-                    self.settings.num_aliases -= 1
-                    self.unlearn_word(x)
-                    print "unlearned aliases %s" % x
+        self.log.debug("Checking dictionary for new aliases...")
+        for word in self.words.keys():
+            if word.startswith('~'):
+                if word not in self.settings.aliases:
+                    self.log.debug("Unlearning alias %r", word)
+                    self.unlearn_word(word)
+            else:
+                for alias_word, patterns in self.settings.aliases.iteritems():
+                    for alias_pattern in patterns:
+                        pattern = r'^%s$' % alias_pattern
+                        if re.search(pattern, word):
+                            self.log.debug("Discovered alias %r for word %r, replacing", alias_word, word)
+                            self.replace_word(word, alias_word)
 
         # Unlearn words in the unlearn.txt file.
         try:
@@ -216,7 +198,7 @@ class PyborgBrain(Brain):
         return ' '.join(words)
 
     def save(self):
-        if self.settings.no_save:
+        if self.settings.protect:
             return
 
         self.log.info("Writing dictionary...")
@@ -293,7 +275,7 @@ class PyborgBrain(Brain):
         words = ['#nick' if '-' in word or '_' in word else word for word in words]
 
         try:
-            contexts_per_word = self.settings.num_contexts / self.settings.num_words
+            contexts_per_word = self.num_contexts / self.num_words
         except ZeroDivisionError:
             contexts_per_word = 0
 
@@ -313,14 +295,14 @@ class PyborgBrain(Brain):
                 try:
                     word_contexts = self.words[word]
                 except KeyError:
-                    self.settings.num_words += 1
+                    self.num_words += 1
                     word_contexts = self.words[word] = list()
                 word_contexts.append(struct.pack("lH", hashval, i))
-                self.settings.num_contexts += 1
+                self.num_contexts += 1
 
         # Stop learning when we know enough words.
-        if self.settings.num_words >= self.settings.max_words:
-            self.log.info("STOP LEARNING: got %d words (max %d)", self.settings.num_words, self.settings.max_words)
+        if self.num_words >= self.settings.max_words:
+            self.log.info("STOP LEARNING: got %d words (max %d)", self.num_words, self.settings.max_words)
             self.settings.learning = False
 
     def learn(self, body, num_context=1):
@@ -364,13 +346,13 @@ class PyborgBrain(Brain):
             word_contexts = self.words[word]
             num_contexts = len(word_contexts)
             word_contexts = list(ctx for ctx in word_contexts if struct.unpack("lH", ctx)[0] in self.lines)
-            self.settings.num_contexts -= num_contexts - len(word_contexts)
+            self.num_contexts -= num_contexts - len(word_contexts)
 
             if word_contexts:
                 self.words[word] = word_contexts
             else:
                 del self.words[word]
-                self.settings.num_words -= 1
+                self.num_words -= 1
                 self.log.info("Unlearned all contexts for word %r", word)
 
     def reply(self, body):
@@ -529,7 +511,7 @@ class PyborgBrain(Brain):
             changed += 1
 
         if new_word in self.words:
-            self.settings.num_words -= 1
+            self.num_words -= 1
             self.words[new_word].extend(self.words[old_word])
         else:
             self.words[new_word] = self.words[old_word]
@@ -538,8 +520,8 @@ class PyborgBrain(Brain):
         return "%d instances of %s replaced with %s" % (changed, old_word, new_word)
 
     def known_words(self):
-        num_w = self.settings.num_words
-        num_c = self.settings.num_contexts
+        num_w = self.num_words
+        num_c = self.num_contexts
         num_l = len(self.lines)
         if num_w != 0:
             num_cpw = num_c / float(num_w)  # contexts per word
@@ -597,7 +579,7 @@ class PyborgBrain(Brain):
                         del wlist[i]
             if len(wlist) == 0:
                 del self.words[w]
-                self.settings.num_words = self.settings.num_words - 1
+                self.num_words -= 1
                 print "\"%s\" vaped totally" % w
 
         return "Checked dictionary in %0.2fs. Fixed links: %d broken, %d bad." % \
@@ -613,20 +595,20 @@ class PyborgBrain(Brain):
         t = time.time()
 
         old_lines = self.lines.values()
-        old_num_words = self.settings.num_words
-        old_num_contexts = self.settings.num_contexts
+        old_num_words = self.num_words
+        old_num_contexts = self.num_contexts
 
         self.words = {}
         self.lines = {}
-        self.settings.num_words = 0
-        self.settings.num_contexts = 0
+        self.num_words = 0
+        self.num_contexts = 0
 
         for line_text, line_contexts in old_lines:
             self.learn(line_text, line_contexts)
 
         return "Rebuilt dictionary in %0.2fs. Words %d (%+d), contexts %d (%+d)" % (
-            time.time() - t, old_num_words, self.settings.num_words - old_num_words,
-            old_num_contexts, self.settings.num_contexts - old_num_contexts)
+            time.time() - t, self.num_words, self.num_words - old_num_words,
+            self.num_contexts, self.num_contexts - old_num_contexts)
 
     @owner_command
     def purge(self, io_module, command_args, args):
@@ -819,10 +801,7 @@ class Pyborg(object):
             'max_words': Setting("Max number of words to learn", 6000),
             'max_word_length': Setting("Max number of characters a word can have to learn it", 13),
             'min_vowel_ratio': Setting("Min ratio of vowels to characters a word can have to learn it", 0.25),
-            'no_save': Setting("If True, don't overwrite the dictionary and configuration on disk", False),
-            'num_aliases': Setting("Total known aliases", 0),
-            'num_contexts': Setting("Total word contexts", 0),
-            'num_words': Setting("Total known unique words", 0),
+            'protect': Setting("If True, don't overwrite the dictionary and configuration on disk", False),
             'process_with': Setting("Which library to generate replies with ('pyborg' or 'megahal')", "pyborg"),
         })
         self.settings.load('pyborg.cfg')
@@ -845,7 +824,7 @@ class Pyborg(object):
         self.settings.save()
 
     def save_all(self):
-        if self.settings.no_save:
+        if self.settings.protect:
             return
 
         self.brain.save()
