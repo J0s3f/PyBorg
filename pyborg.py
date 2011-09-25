@@ -41,6 +41,16 @@ import zipfile
 from cfgfile import Setting, Settings
 
 
+def command(fn):
+    fn.is_command = True
+    return fn
+
+
+def owner_command(fn):
+    fn.is_owner_command = True
+    return command(fn)
+
+
 class Brain(object):
 
     def __init__(self, settings):
@@ -168,13 +178,13 @@ class PyborgBrain(Brain):
                             pattern = "^%s$" % alias
                             if re.search(pattern, x):
                                 print "replace %s with %s" % (x, z)
-                                self.replace(x, z)
+                                self.replace_word(x, z)
 
             for x in self.words.keys():
                 if not (x in self.settings.aliases.keys()) and x[0] == '~':
                     print "unlearn %s" % x
                     self.settings.num_aliases -= 1
-                    self.unlearn(x)
+                    self.unlearn_word(x)
                     print "unlearned aliases %s" % x
 
         # Unlearn words in the unlearn.txt file.
@@ -183,7 +193,7 @@ class PyborgBrain(Brain):
                 for word in unlearn_file:
                     word = word.strip()
                     if word and word in self.words:
-                        self.unlearn(word)
+                        self.unlearn_word(word)
         except (EOFError, IOError):
             # No words to unlearn.
             pass
@@ -239,11 +249,11 @@ class PyborgBrain(Brain):
                 words_file.write(word)
                 words_file.write('\n')
 
-    def learn_sentence(self, body, num_context):
+    def learn_sentence(self, sentence, num_context):
         """
         Learn from a sentence.
         """
-        words = body.split()
+        words = sentence.split()
 
         # Ignore empty sentences.
         # TODO: this used to be sentences with fewer than three words. should it be?
@@ -288,17 +298,17 @@ class PyborgBrain(Brain):
         except ZeroDivisionError:
             contexts_per_word = 0
 
-        cleanbody = " ".join(words)
+        clean_sentence = " ".join(words)
 
         # Hash collisions we don't care about. 2^32 is big :-)
-        hashval = hash(cleanbody)
+        hashval = hash(clean_sentence)
 
         # Check context isn't already known
         if hashval in self.lines:
             self.lines[hashval][1] += num_context
         # TODO: is this a bug that we can learn until 100 cpw even when "learning" is off?
         elif contexts_per_word <= 100 or self.settings.learning:
-            self.lines[hashval] = [cleanbody, num_context]
+            self.lines[hashval] = [clean_sentence, num_context]
             # Add a link for each word.
             for i, word in izip(count(0), words):
                 try:
@@ -322,7 +332,7 @@ class PyborgBrain(Brain):
         for sentence in body.split('. '):
             self.learn_sentence(sentence, num_context)
 
-    def unlearn(self, context):
+    def unlearn_word(self, context):
         """
         Unlearn all contexts containing 'context'. If 'context'
         is a single word then all contexts containing that word
@@ -368,7 +378,7 @@ class PyborgBrain(Brain):
         Reply to a line of text.
         """
         # split sentences into list of words
-        _words = body.split(" ")
+        _words = body.split()
         words = []
         for i in _words:
             words += i.split()
@@ -562,6 +572,316 @@ class PyborgBrain(Brain):
         # return as string..
         return "".join( sentence )
 
+    def replace_word(self, old, new):
+        """
+        Replace all occuraces of 'old' in the dictionary with
+        'new'. Nice for fixing learnt typos.
+        """
+        try:
+            pointers = self.words[old]
+        except KeyError:
+            return old + " not known."
+        changed = 0
+
+        for x in pointers:
+            # pointers consist of (line, word) to self.lines
+            l, w = struct.unpack("lH", x)
+            line = self.lines[l][0].split()
+            number = self.lines[l][1]
+            if line[w] != old:
+                # fucked dictionary
+                print "Broken link: %s %s" % (x, self.lines[l][0])
+                continue
+            else:
+                line[w] = new
+                self.lines[l][0] = " ".join(line)
+                self.lines[l][1] += number
+                changed += 1
+
+        if self.words.has_key(new):
+            self.settings.num_words -= 1
+            self.words[new].extend(self.words[old])
+        else:
+            self.words[new] = self.words[old]
+        del self.words[old]
+        return "%d instances of %s replaced with %s" % (changed, old, new)
+
+    def known_words(self):
+        num_w = self.settings.num_words
+        num_c = self.settings.num_contexts
+        num_l = len(self.lines)
+        if num_w != 0:
+            num_cpw = num_c / float(num_w)  # contexts per word
+        else:
+            num_cpw = 0.0
+        return "I know %d words (%d contexts, %.2f per word), %d lines." % (num_w, num_c, num_cpw, num_l)
+
+    @command
+    def known(self, io_module, command_args, args):
+        words = command_args
+        if not words:
+            return self.known_words()
+
+        msg = "Number of contexts: "
+        for word in words:
+            word = word.lower()
+            if self.words.has_key(word):
+                contexts = len(self.words[word])
+                msg += word + "/%i " % contexts
+            else:
+                msg += word + "/unknown "
+        msg = msg.replace("#nick", "$nick")
+        return msg
+
+    @owner_command
+    def limit(self, io_module, command_args, args):
+        msg = "The max limit is "
+        if not command_args:
+            msg += str(self.settings.max_words)
+        else:
+            limit = int(command_args[0].lower())
+            self.settings.max_words = limit
+            msg += "now " + command_list[1]
+        return msg
+
+    @owner_command
+    def checkdict(self, io_module, command_args, args):
+        t = time.time()
+        num_broken = 0
+        num_bad = 0
+        for w in self.words.keys():
+            wlist = self.words[w]
+
+            for i in xrange(len(wlist) - 1, -1, -1):
+                line_idx, word_num = struct.unpack("lH", wlist[i])
+
+                # Nasty critical error we should fix
+                if not self.lines.has_key(line_idx):
+                    print "Removing broken link '%s' -> %d" % (w, line_idx)
+                    num_broken = num_broken + 1
+                    del wlist[i]
+                else:
+                    # Check pointed to word is correct
+                    split_line = self.lines[line_idx][0].split()
+                    if split_line[word_num] != w:
+                        print "Line '%s' word %d is not '%s' as expected." % \
+                            (self.lines[line_idx][0], word_num, w)
+                        num_bad = num_bad + 1
+                        del wlist[i]
+            if len(wlist) == 0:
+                del self.words[w]
+                self.settings.num_words = self.settings.num_words - 1
+                print "\"%s\" vaped totally" % w
+
+        return "Checked dictionary in %0.2fs. Fixed links: %d broken, %d bad." % \
+            (time.time() - t, num_broken, num_bad)
+
+    @owner_command
+    def rebuilddict(self, io_module, command_args, args):
+        # Rebuild the dictionary by discarding the word links and
+        # re-parsing each line
+        if self.settings.learning == 1:
+            t = time.time()
+
+            old_lines = self.lines
+            old_num_words = self.settings.num_words
+            old_num_contexts = self.settings.num_contexts
+
+            self.words = {}
+            self.lines = {}
+            self.settings.num_words = 0
+            self.settings.num_contexts = 0
+
+            for k in old_lines.keys():
+                self.learn(old_lines[k][0], old_lines[k][1])
+
+            return "Rebuilt dictionary in %0.2fs. Words %d (%+d), contexts %d (%+d)" % \
+                (time.time() - t, old_num_words, self.settings.num_words - old_num_words,
+                old_num_contexts, self.settings.num_contexts - old_num_contexts)
+
+    @owner_command
+    def purge(self, io_module, command_args, args):
+        # Remove rare words.
+        t = time.time()
+
+        liste = []
+        compteur = 0
+
+        if command_args:
+            # limite d occurences a effacer
+            c_max = command_args[0].lower()
+        else:
+            c_max = 0
+
+        c_max = int(c_max)
+
+        for w in self.words.keys():
+            digit = 0
+            char = 0
+            for c in w:
+                if c.isalpha():
+                    char += 1
+                if c.isdigit():
+                    digit += 1
+
+            #Compte les mots inferieurs a cette limite
+            c = len(self.words[w])
+            if c < 2 or (digit and char):
+                liste.append(w)
+                compteur += 1
+                if compteur == c_max:
+                    break
+
+        if c_max < 1:
+            #io_module.output(str(compteur)+" words to remove", args)
+            io_module.output("%s words to remove" % compteur, args)
+            return
+
+        #supprime les mots
+        [self.unlearn_word( w ) for w in liste[0:]]
+
+        return "Purge dictionary in %0.2fs. %d words removed" % \
+            (time.time() - t, compteur)
+
+    @owner_command
+    def replace(self, io_module, command_args, args):
+        # Change a typo in the dictionary
+        if len(command_args) < 2:
+            return
+        old = command_args[0].lower()
+        new = command_args[1].lower()
+        return self.replace_word(old, new)
+
+    @owner_command
+    def alias(self, io_module, command_args, args):
+        # no arguments. list aliases words
+        if not command_args:
+            if len(self.settings.aliases) == 0:
+                msg = "No aliases"
+            else:
+                msg = "I will alias the word(s) %s" \
+                    % ", ".join(self.settings.aliases.keys())
+        # add every word listed to alias list
+        elif len(command_args) == 1:
+            command_arg = command_args[0]
+            if command_arg[0] != '~':
+                command_arg = '~' + command_arg
+            if command_arg in self.settings.aliases:
+                msg = "Thoses words : %s  are aliases to %s" \
+                    % (" ".join(self.settings.aliases[command_arg]), command_arg)
+            else:
+                msg = "The alias %s is not known" % command_arg[1:]
+        elif len(command_args) > 1:
+            # create the aliases
+            alias_word = command_args.pop(0)
+            msg = "The words : "
+            if alias_word[0] != '~':
+                alias_word = '~' + alias_word
+            if not (alias_word in self.settings.aliases):
+                self.settings.aliases[alias_word] = [alias_word[1:]]
+                self.replace_word(alias_word[1:], alias_word)
+                msg += alias_word[1:] + " "
+            for alias_pat in command_list:
+                msg += "%s " % alias_pat
+                self.settings.aliases[alias_word].append(alias_pat)
+                #replace each words by his alias
+                self.replace_word(alias_pat, alias_word)
+            msg += "have been aliased to %s" % alias_word
+        return msg
+
+    @owner_command
+    def contexts(self, io_module, command_args, args):
+        # This is a large lump of data and should
+        # probably be printed, not module.output XXX
+
+        # build context we are looking for
+        context = " ".join(command_args)
+        context = context.lower()
+        if context == "":
+            return
+        io_module.output("Contexts containing \"" + context + "\":", args)
+        # Build context list
+        # Pad it
+        context = " " + context + " "
+        c = []
+        # Search through contexts
+        for x in self.lines.keys():
+            # get context
+            ctxt = self.lines[x][0]
+            # add leading whitespace for easy sloppy search code
+            ctxt = " " + ctxt + " "
+            if ctxt.find(context) != -1:
+                # Avoid duplicates (2 of a word
+                # in a single context)
+                if len(c) == 0:
+                    c.append(self.lines[x][0])
+                elif c[len(c) - 1] != self.lines[x][0]:
+                    c.append(self.lines[x][0])
+        x = 0
+        while x < 5:
+            if x < len(c):
+                io_module.output(c[x], args)
+            x += 1
+        if len(c) == 5:
+            return
+        if len(c) > 10:
+            io_module.output("...(" + `len( c ) - 10` + " skipped)...", args)
+        x = len(c) - 5
+        if x < 5:
+            x = 5
+        while x < len(c):
+            io_module.output(c[x], args)
+            x += 1
+
+    @owner_command
+    def unlearn(self, io_module, command_args, args):
+        # build context we are looking for
+        context = " ".join(command_args)
+        context = context.lower()
+        if context == "":
+            return
+        print "Looking for: " + context
+        # Unlearn contexts containing 'context'
+        t = time.time()
+        self.unlearn_word(context)
+        # we don't actually check if anything was
+        # done..
+        msg = "Unlearn done in %0.2fs" % (time.time() - t)
+        return msg
+
+    @owner_command
+    def censor(self, io_module, command_args, args):
+        # no arguments. list censored words
+        if not command_args:
+            if len(self.settings.censored) == 0:
+                msg = "No words censored"
+            else:
+                msg = "I will not use the word(s) %s" % ", ".join(self.settings.censored)
+        # add every word listed to censored list
+        else:
+            for word in command_args:
+                if word in self.settings.censored:
+                    msg += "%s is already censored" % word
+                else:
+                    self.settings.censored.append(word.lower())
+                    self.unlearn_word(word)
+                    msg += "done"
+                msg += "\n"
+        return msg
+
+    @owner_command
+    def uncensor(self, io_module, command_args, args):
+        # Remove everyone listed from the ignore list
+        # eg !unignore tom dick harry
+        msg = ""
+        for word in command_args:
+            try:
+                self.settings.censored.remove(word.lower())
+                msg = "done"
+            except ValueError:
+                pass
+        return msg
+
 
 class Pyborg(object):
 
@@ -588,6 +908,8 @@ class Pyborg(object):
         "alias": "Owner command. Usage: !alias : Show the differents aliases\n!alias <alias> : show the words attached to this alias\n!alias <alias> <word> : link the word to the alias",
         "owner": "Usage : !owner password\nAdd the user in the owner list"
     }
+
+    log = logging.getLogger('Pyborg')
 
     def __init__(self):
         """
@@ -640,16 +962,16 @@ class Pyborg(object):
 
         self.settings.save()
 
-    def process_msg(self, io_module, body, replyrate, learn, args, owner=0):
+    def process_msg(self, io_module, body, replyrate, learn, args, owner=False):
         """
         Process message 'body' and pass back to IO module with args.
-        If owner==1 allow owner commands.
+        If owner, allow owner commands.
         """
         # add trailing space so sentences are broken up correctly
         body = body + " "
 
         # Parse commands
-        if body[0] == "!":
+        if body.startswith('!'):
             self.do_commands(io_module, body, args, owner)
             return
 
@@ -687,7 +1009,7 @@ class Pyborg(object):
             if message == "":
                 return
             # else output
-            if owner == 0:
+            if not owner:
                 time.sleep(.2 * len(message))
             io_module.output(message, args)
 
@@ -695,367 +1017,86 @@ class Pyborg(object):
         """
         Respond to user comands.
         """
-        msg = ""
-
         command_list = body.split()
-        command_list[0] = command_list[0].lower()
+        command = command_list.pop(0).lstrip('!').lower()
 
-        # Guest commands.
+        command_method = getattr(self, command, None)
+        self.log.debug("What is command %r?", command)
+        if command_method is None:
+            self.log.debug("No such pyborg command %r. Is there a brain command %r?", command, command)
+            command_method = getattr(self.brain, command, None)
+        if command_method is None:
+            self.log.debug("No such pyborg or brain command %r, doing nothing :(")
+            return
+        if not getattr(command_method, 'is_command', False):
+            self.log.debug("Found requested method %r for command %r, but it's not a command, doing nothing :(",
+                command_method, command)
+            return
+        if getattr(command_method, 'is_owner_command', False) and not owner:
+            self.log.debug("Command %r is an owner command but requestor is not the owner, doing nothing :(", command)
+            return
 
-        # Version string
-        if command_list[0] == "!version":
-            msg = self.ver_string
-
-        # How many words do we know?
-        elif command_list[0] == "!words" and self.settings.process_with == "pyborg":
-            num_w = self.settings.num_words
-            num_c = self.settings.num_contexts
-            num_l = len(self.lines)
-            if num_w != 0:
-                num_cpw = num_c / float(num_w)  # contexts per word
-            else:
-                num_cpw = 0.0
-            msg = "I know %d words (%d contexts, %.2f per word), %d lines." % (num_w, num_c, num_cpw, num_l)
-
-        # Do i know this word
-        elif command_list[0] == "!known" and self.settings.process_with == "pyborg":
-            words = (x.lower() for x in command_list[1:])
-            msg = "Number of contexts: "
-            for word in words:
-                if self.words.has_key(word):
-                    contexts = len(self.words[word])
-                    msg += word + "/%i " % contexts
-                else:
-                    msg += word + "/unknown "
-            msg = msg.replace("#nick", "$nick")
-
-        # Owner commands
-        if owner == 1:
-            # Save dictionary
-            if command_list[0] == "!save":
-                self.save_all()
-                msg = "Dictionary saved"
-
-            # Command list
-            elif command_list[0] == "!help":
-                if len(command_list) > 1:
-                    # Help for a specific command
-                    cmd = command_list[1].lower()
-                    dic = None
-                    if cmd in self.commanddict.keys():
-                        dic = self.commanddict
-                    elif cmd in io_module.commanddict.keys():
-                        dic = io_module.commanddict
-                    if dic:
-                        for i in dic[cmd].split("\n"):
-                            io_module.output(i, args)
-                    else:
-                        msg = "No help on command '%s'" % cmd
-                else:
-                    for i in self.commandlist.split("\n"):
-                        io_module.output( i, args )
-                    for i in io_module.commandlist.split("\n"):
-                        io_module.output( i, args )
-
-            # Change the max_words setting
-            elif command_list[0] == "!limit" and self.settings.process_with == "pyborg":
-                msg = "The max limit is "
-                if len(command_list) == 1:
-                    msg += str(self.settings.max_words)
-                else:
-                    limit = int(command_list[1].lower())
-                    self.settings.max_words = limit
-                    msg += "now " + command_list[1]
-
-            # Check for broken links in the dictionary
-            elif command_list[0] == "!checkdict" and self.settings.process_with == "pyborg":
-                t = time.time()
-                num_broken = 0
-                num_bad = 0
-                for w in self.words.keys():
-                    wlist = self.words[w]
-
-                    for i in xrange(len(wlist) - 1, -1, -1):
-                        line_idx, word_num = struct.unpack("lH", wlist[i])
-
-                        # Nasty critical error we should fix
-                        if not self.lines.has_key(line_idx):
-                            print "Removing broken link '%s' -> %d" % (w, line_idx)
-                            num_broken = num_broken + 1
-                            del wlist[i]
-                        else:
-                            # Check pointed to word is correct
-                            split_line = self.lines[line_idx][0].split()
-                            if split_line[word_num] != w:
-                                print "Line '%s' word %d is not '%s' as expected." % \
-                                    (self.lines[line_idx][0], word_num, w)
-                                num_bad = num_bad + 1
-                                del wlist[i]
-                    if len(wlist) == 0:
-                        del self.words[w]
-                        self.settings.num_words = self.settings.num_words - 1
-                        print "\"%s\" vaped totally" % w
-
-                msg = "Checked dictionary in %0.2fs. Fixed links: %d broken, %d bad." % \
-                    (time.time() - t, num_broken, num_bad)
-
-            # Rebuild the dictionary by discarding the word links and
-            # re-parsing each line
-            elif command_list[0] == "!rebuilddict" and self.settings.process_with == "pyborg":
-                if self.settings.learning == 1:
-                    t = time.time()
-
-                    old_lines = self.lines
-                    old_num_words = self.settings.num_words
-                    old_num_contexts = self.settings.num_contexts
-
-                    self.words = {}
-                    self.lines = {}
-                    self.settings.num_words = 0
-                    self.settings.num_contexts = 0
-
-                    for k in old_lines.keys():
-                        self.learn( old_lines[k][0], old_lines[k][1] )
-
-                    msg = "Rebuilt dictionary in %0.2fs. Words %d (%+d), contexts %d (%+d)" % \
-                        (time.time() - t, old_num_words, self.settings.num_words - old_num_words,
-                        old_num_contexts, self.settings.num_contexts - old_num_contexts)
-
-            #Remove rares words
-            elif command_list[0] == "!purge" and self.settings.process_with == "pyborg":
-                t = time.time()
-
-                liste = []
-                compteur = 0
-
-                if len(command_list) == 2:
-                    # limite d occurences a effacer
-                    c_max = command_list[1].lower()
-                else:
-                    c_max = 0
-
-                c_max = int(c_max)
-
-                for w in self.words.keys():
-                    digit = 0
-                    char = 0
-                    for c in w:
-                        if c.isalpha():
-                            char += 1
-                        if c.isdigit():
-                            digit += 1
-
-                    #Compte les mots inferieurs a cette limite
-                    c = len(self.words[w])
-                    if c < 2 or (digit and char):
-                        liste.append(w)
-                        compteur += 1
-                        if compteur == c_max:
-                            break
-
-                if c_max < 1:
-                    #io_module.output(str(compteur)+" words to remove", args)
-                    io_module.output("%s words to remove" % compteur, args)
-                    return
-
-                #supprime les mots
-                [self.unlearn( w ) for w in liste[0:]]
-
-                msg = "Purge dictionary in %0.2fs. %d words removed" % \
-                    (time.time() - t, compteur)
-
-            # Change a typo in the dictionary
-            elif command_list[0] == "!replace" and self.settings.process_with == "pyborg":
-                if len(command_list) < 3:
-                    return
-                old = command_list[1].lower()
-                new = command_list[2].lower()
-                msg = self.replace(old, new)
-
-            # Print contexts [flooding...:-]
-            elif command_list[0] == "!contexts" and self.settings.process_with == "pyborg":
-                # This is a large lump of data and should
-                # probably be printed, not module.output XXX
-
-                # build context we are looking for
-                context = " ".join(command_list[1:])
-                context = context.lower()
-                if context == "":
-                    return
-                io_module.output("Contexts containing \"" + context + "\":", args)
-                # Build context list
-                # Pad it
-                context = " " + context + " "
-                c = []
-                # Search through contexts
-                for x in self.lines.keys():
-                    # get context
-                    ctxt = self.lines[x][0]
-                    # add leading whitespace for easy sloppy search code
-                    ctxt = " " + ctxt + " "
-                    if ctxt.find(context) != -1:
-                        # Avoid duplicates (2 of a word
-                        # in a single context)
-                        if len(c) == 0:
-                            c.append(self.lines[x][0])
-                        elif c[len(c) - 1] != self.lines[x][0]:
-                            c.append(self.lines[x][0])
-                x = 0
-                while x < 5:
-                    if x < len(c):
-                        io_module.output(c[x], args)
-                    x += 1
-                if len(c) == 5:
-                    return
-                if len(c) > 10:
-                    io_module.output("...(" + `len( c ) - 10` + " skipped)...", args)
-                x = len(c) - 5
-                if x < 5:
-                    x = 5
-                while x < len(c):
-                    io_module.output(c[x], args)
-                    x += 1
-
-            # Remove a word from the vocabulary [use with care]
-            elif command_list[0] == "!unlearn" and self.settings.process_with == "pyborg":
-                # build context we are looking for
-                context = " ".join(command_list[1:])
-                context = context.lower()
-                if context == "":
-                    return
-                print "Looking for: " + context
-                # Unlearn contexts containing 'context'
-                t = time.time()
-                self.unlearn(context)
-                # we don't actually check if anything was
-                # done..
-                msg = "Unlearn done in %0.2fs" % (time.time() - t)
-
-            # Query/toggle bot learning
-            elif command_list[0] == "!learning":
-                msg = "Learning mode "
-                if len(command_list) == 1:
-                    if self.settings.learning == 0:
-                        msg += "off"
-                    else:
-                        msg += "on"
-                else:
-                    toggle = command_list[1].lower()
-                    if toggle == "on":
-                        msg += "on"
-                        self.settings.learning = 1
-                    else:
-                        msg += "off"
-                        self.settings.learning = 0
-
-            # add a word to the 'censored' list
-            elif command_list[0] == "!censor" and self.settings.process_with == "pyborg":
-                # no arguments. list censored words
-                if len(command_list) == 1:
-                    if len(self.settings.censored) == 0:
-                        msg = "No words censored"
-                    else:
-                        msg = "I will not use the word(s) %s" % ", ".join(self.settings.censored)
-                # add every word listed to censored list
-                else:
-                    for x in xrange(1, len(command_list )):
-                        if command_list[x] in self.settings.censored:
-                            msg += "%s is already censored" % command_list[x]
-                        else:
-                            self.settings.censored.append(command_list[x].lower())
-                            self.unlearn(command_list[x])
-                            msg += "done"
-                        msg += "\n"
-
-            # remove a word from the censored list
-            elif command_list[0] == "!uncensor" and self.settings.process_with == "pyborg":
-                # Remove everyone listed from the ignore list
-                # eg !unignore tom dick harry
-                for x in xrange(1, len(command_list)):
-                    try:
-                        self.settings.censored.remove(command_list[x].lower())
-                        msg = "done"
-                    except ValueError:
-                        pass
-
-            elif command_list[0] == "!alias" and self.settings.process_with == "pyborg":
-                # no arguments. list aliases words
-                if len(command_list) == 1:
-                    if len(self.settings.aliases) == 0:
-                        msg = "No aliases"
-                    else:
-                        msg = "I will alias the word(s) %s" \
-                            % ", ".join(self.settings.aliases.keys())
-                # add every word listed to alias list
-                elif len(command_list) == 2:
-                    if command_list[1][0] != '~':
-                        command_list[1] = '~' + command_list[1]
-                    if command_list[1] in self.settings.aliases.keys():
-                        msg = "Thoses words : %s  are aliases to %s" \
-                            % (" ".join(self.settings.aliases[command_list[1]]), command_list[1])
-                    else:
-                        msg = "The alias %s is not known" % command_list[1][1:]
-                elif len(command_list) > 2:
-                    # create the aliases
-                    msg = "The words : "
-                    if command_list[1][0] != '~':
-                        command_list[1] = '~' + command_list[1]
-                    if not (command_list[1] in self.settings.aliases.keys()):
-                        self.settings.aliases[command_list[1]] = [command_list[1][1:]]
-                        self.replace(command_list[1][1:], command_list[1])
-                        msg += command_list[1][1:] + " "
-                    for x in xrange(2, len(command_list)):
-                        msg += "%s " % command_list[x]
-                        self.settings.aliases[command_list[1]].append(command_list[x])
-                        #replace each words by his alias
-                        self.replace(command_list[x], command_list[1])
-                    msg += "have been aliases to %s" % command_list[1]
-
-            # Quit
-            elif command_list[0] == "!quit":
-                # Close the dictionary
-                self.save_all()
-                sys.exit()
-
-            # Save changes
-            self.settings.save()
-
-        if msg != "":
-            io_module.output(msg, args)
-
-    def replace(self, old, new):
-        """
-        Replace all occuraces of 'old' in the dictionary with
-        'new'. Nice for fixing learnt typos.
-        """
+        self.log.debug("Yay, running command %r!", command)
         try:
-            pointers = self.words[old]
-        except KeyError:
-            return old + " not known."
-        changed = 0
+            message = command_method(io_module, command_list, args)
+        except Exception, exc:
+            message = 'Oops, internal error :('
+            self.log.exception()
+        if message:
+            io_module.output(message, args)
 
-        for x in pointers:
-            # pointers consist of (line, word) to self.lines
-            l, w = struct.unpack("lH", x)
-            line = self.lines[l][0].split()
-            number = self.lines[l][1]
-            if line[w] != old:
-                # fucked dictionary
-                print "Broken link: %s %s" % (x, self.lines[l][0])
-                continue
+    @command
+    def version(self, io_module, command_args, args):
+        return self.ver_string
+
+    @owner_command
+    def save(self, io_module, command_args, args):
+        self.save_all()
+        return "Dictionary saved"
+
+    @owner_command
+    def help(self, io_module, command_args, args):
+        if command_args:
+            # Help for a specific command
+            cmd = command_args[0].lower()
+            dic = None
+            if cmd in self.commanddict.keys():
+                dic = self.commanddict
+            elif cmd in io_module.commanddict.keys():
+                dic = io_module.commanddict
+            if dic:
+                for i in dic[cmd].split("\n"):
+                    io_module.output(i, args)
             else:
-                line[w] = new
-                self.lines[l][0] = " ".join(line)
-                self.lines[l][1] += number
-                changed += 1
-
-        if self.words.has_key(new):
-            self.settings.num_words -= 1
-            self.words[new].extend(self.words[old])
+                return "No help on command '%s'" % cmd
         else:
-            self.words[new] = self.words[old]
-        del self.words[old]
-        return "%d instances of %s replaced with %s" % (changed, old, new)
+            for i in self.commandlist.split("\n"):
+                io_module.output( i, args )
+            for i in io_module.commandlist.split("\n"):
+                io_module.output( i, args )
+
+    @owner_command
+    def learning(self, io_module, command_args, args):
+        msg = "Learning mode "
+        if not command_args:
+            if self.settings.learning == 0:
+                msg += "off"
+            else:
+                msg += "on"
+        else:
+            toggle = command_args[0].lower()
+            if toggle == "on":
+                msg += "on"
+                self.settings.learning = 1
+            else:
+                msg += "off"
+                self.settings.learning = 0
+        return msg
+
+    @owner_command
+    def quit(self, io_module, command_args, args):
+        self.save_all()
+        sys.exit()
 
     def reply(self, body):
         return self.brain.reply(body)

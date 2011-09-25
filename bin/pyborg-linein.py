@@ -20,6 +20,7 @@
 # Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #
 
+import logging
 import string
 import sys
 
@@ -56,7 +57,7 @@ class ModLineIn:
                 if self.linein_commands(body):
                     continue
             # Pass message to borg
-            self.pyborg.process_msg(self, body, 100, 1, ( name ), owner = 1)
+            self.pyborg.process_msg(self, body, 100, 1, name, owner=True)
 
     def linein_commands(self, body):
         command_list = string.split(body)
@@ -74,6 +75,7 @@ class ModLineIn:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     my_pyborg = pyborg.Pyborg()
     try:
         ModLineIn(my_pyborg)
