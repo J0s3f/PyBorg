@@ -407,13 +407,12 @@ class PyborgBrain(Brain):
         # Build sentence backwards from "chosen" word
         sentence = [seed_word]
 
-        EOL = ''
-        done = False
-        while not done:
+        EOL = object()
+        while True:
             # create a dictionary wich will contain all the words we can found before the "chosen" word
             candidate_words = { EOL: 0 }
 
-            this_word = sentence[0]
+            this_word = sentence[-1]
             for context in self.words[this_word]:
                 line_hash, word_index = struct.unpack("lH", context)
                 line, num_contexts = self.lines[line_hash]
@@ -436,7 +435,7 @@ class PyborgBrain(Brain):
                 # Does the *previous* word in the candidate word's sentence *also* match?
                 # That is, does the candidate word follow a run of *two* words in the sentence?
                 try:
-                    following_word_matches = sentence[0 - -1] == line_words[word_index - -1]
+                    following_word_matches = sentence[-2] == line_words[word_index - -1]
                 except IndexError:
                     # Either the seed sentence or the candidate line are too short to consider the next word, but that's okay.
                     pass
@@ -447,36 +446,21 @@ class PyborgBrain(Brain):
 
                 candidate_words[cand_word] = candidate_words.get(cand_word, 0) + num_contexts
 
-            # Sort the words
-            liste = candidate_words.items()
-            liste.sort( lambda x, y: cmp( y[1], x[1] ) )
-
-            numbers = [liste[0][1]]
-            for x in xrange(1, len( liste)):
-                numbers.append(liste[x][1] + numbers[x - 1])
-
-            # take one them from the list (randomly)
-            mot = random.randint(0, numbers[len(numbers) - 1])
-            for x in xrange(0, len(numbers)):
-                if mot <= numbers[x]:
-                    mot = liste[x][0]
+            # Randomly select an unused candidate word, weighted by number of contexts.
+            total_contexts = sum(candidate_words.values())
+            selection = random.randint(0, total_contexts)
+            for cand_word, cand_contexts in candidate_words.iteritems():
+                selection -= cand_contexts
+                if selection <= 0:
                     break
 
-            # if the word is already choosen, pick the next one
-            while mot in sentence:
-                x += 1
-                if x >= len(liste) - 1:
-                    mot = ''
-                mot = liste[x][0]
+            selected_word = cand_word
+            if selected_word is EOL:
+                break
 
-            mot = mot.split(" ")
-            mot.reverse()
-            if mot == ['']:
-                done = True
-            else:
-                #map((lambda x: sentence.insert(0, x)), mot)
-                [sentence.insert(0, x) for x in mot]
+            sentence.append(cand_word)
 
+        sentence = list(reversed(sentence))
         pre_words = sentence
         sentence = sentence[-2:]
 
