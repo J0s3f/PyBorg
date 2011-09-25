@@ -48,46 +48,30 @@ def filter_message(message, bot):
     padding ? and ! with ". " so they also terminate lines
     and converting to lower case.
     """
-    # to lowercase
     message = message.lower()
 
     # remove garbage
-    message = message.replace("\"", "")   # remove "s
-    message = message.replace("'", "")    # remove 's
-    message = message.replace("\n", " ")  # remove newlines
-    message = message.replace("\r", " ")  # remove carriage returns
+    replacements = {
+        '"': '',
+        "'": '',
+        '; ': ', ',
+        '?': ' ? ',
+        '!': ' ! ',
+        '.': ' . ',
+        ',': ' , ',
+        '#nick:': '#nick :',
+    }
+    for repl_from, repl_to in replacements.iteritems():
+        message = message.replace(repl_from, repl_to)
 
     # remove matching brackets (unmatched ones are likely smileys :-) *cough*
     # should except out when not found.
-    index = 0
-    try:
-        while 1:
-            index = message.index("(", index)
-            # Remove matching ) bracket
-            i = message.index(")", index + 1)
-            message = message[0:i] + message[i + 1:]
-            # And remove the (
-            message = message[0:index] + message[index + 1:]
-    except ValueError:
-        pass
+    subs = -1
+    while subs != 0:
+        message, subs = re.subn(r'(?x) \( ([^)]*) \)', r'\1', message)
 
     # No sense in keeping URLS
     message = re.sub(r"https?://[^ ]* ", "", message)
-
-    message = message.replace("; ", ", ")
-    for split_char in ['?', '!', '.', ',']:
-        message = message.replace(split_char, " %c " % split_char)
-#    message = message.replace("'", " ' ")
-#    message = re.sub(r"\b:", " : ", message)
-    message = message.replace("#nick:", "#nick :")
-
-    # Find ! and ? and append full stops.
-#    message = message.replace(". ", ".. ")
-#    message = message.replace("? ", "?. ")
-#    message = message.replace("! ", "!. ")
-
-    #And correct the '...'
-#    message = message.replace("..  ..  .. ", ".... ")
 
     words = message.split()
     if bot.settings.process_with == "pyborg":
