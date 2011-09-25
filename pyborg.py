@@ -546,14 +546,14 @@ class PyborgBrain(Brain):
 
     @command
     def known(self, io_module, command_args, args):
-        words = command_args
-        if not words:
+        if not command_args:
             return self.known_words()
+        words = command_args
 
         msg = "Number of contexts: "
         for word in words:
             word = word.lower()
-            if self.words.has_key(word):
+            if word in self.words:
                 contexts = len(self.words[word])
                 msg += word + "/%i " % contexts
             else:
@@ -563,14 +563,10 @@ class PyborgBrain(Brain):
 
     @owner_command
     def limit(self, io_module, command_args, args):
-        msg = "The max limit is "
         if not command_args:
-            msg += str(self.settings.max_words)
-        else:
-            limit = int(command_args[0].lower())
-            self.settings.max_words = limit
-            msg += "now " + command_list[1]
-        return msg
+            return "The max limit is %d words." % self.settings.max_words
+        self.settings.max_words = int(command_args[0].lower())
+        return "Set the max word limit to %d words." % self.settings.max_words
 
     @owner_command
     def checkdict(self, io_module, command_args, args):
