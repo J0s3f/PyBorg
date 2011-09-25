@@ -259,7 +259,7 @@ class PyborgBrain(Brain):
         if not words:
             return
 
-        all_vowels = "aÃ Ã¢eÃ©Ã¨ÃªiÃ®Ã¯oÃ¶Ã´uÃ¼Ã»y"
+        all_vowels = u'a\xe0\xe2e\xe9\xe8\xeai\xee\xefo\xf6\xf4u\xfc\xfby'
 
         for word in words:
             for censored in self.settings.censored:
