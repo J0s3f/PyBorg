@@ -404,14 +404,18 @@ class PyborgBrain(Brain):
         word = random.choice(rarest_words)
         self.log.debug("Selected seed word: %r", word)
 
-        def choose_words(seed_word):
-            sentence = [seed_word]
+        def choose_words(sentence, reverse=False):
+            search_direction = -1 if reverse else 1
+
+            sentence = list(reversed(sentence)) if reverse else list(sentence)
             EOL = object()
             while True:
                 # create a dictionary wich will contain all the words we can found before the "chosen" word
                 candidate_words = { EOL: 0 }
 
                 this_word = sentence[-1]
+                self.log.debug("Examining candidates to follow word %r in %d contexts",
+                    this_word, len(self.words[this_word]))
                 for context in self.words[this_word]:
                     line_hash, word_index = struct.unpack("lH", context)
                     line, num_contexts = self.lines[line_hash]
@@ -421,29 +425,43 @@ class PyborgBrain(Brain):
                         line, this_word, word_index)
 
                     try:
-                        cand_word = line_words[word_index + -1]
+                        cand_index = word_index + search_direction
+                        if cand_index < 0:
+                            raise IndexError
+                        cand_word = line_words[cand_index]
                     except IndexError:
                         # The seed word is at the end of the line, so nominate the EOL.
+                        self.log.debug("Found current word %r at the end of line %r, so nominating EOL", this_word, line)
                         candidate_words[EOL] += num_contexts
                         continue
 
                     # Don't nominate a word that's already in the sentence.
                     if cand_word in sentence:
+                        self.log.debug("Skipping candidate word %r: already in the sentence", cand_word)
                         continue
 
                     # Does the *previous* word in the candidate word's sentence *also* match?
                     # That is, does the candidate word follow a run of *two* words in the sentence?
                     try:
-                        following_word_matches = sentence[-2] == line_words[word_index - -1]
+                        following_line_index = word_index - search_direction
+                        if following_line_index < 0:
+                            raise IndexError
+                        following_word_matches = sentence[-2] == line_words[following_line_index]
                     except IndexError:
                         # Either the seed sentence or the candidate line are too short to consider the next word, but that's okay.
-                        pass
+                        self.log.debug("Couldn't determine if candidate word %r has a run-of-2, so benefitting its doubt",
+                            cand_word)
                     else:
                         # If there *are* following words to compare at all, require they match.
-                        if not following_word_matches:
+                        if following_word_matches:
+                            self.log.debug("Skipping candidate word %r: previous word is %r, but wanted %r",
+                                cand_word, line_words[word_index - search_direction], sentence[-2])
                             continue
 
                     candidate_words[cand_word] = candidate_words.get(cand_word, 0) + num_contexts
+                    self.log.debug("Yay, candidate word %r up to %d contexts!", cand_word, candidate_words[cand_word])
+
+                self.log.debug("From seed word %r, discovered candidates: %r", this_word, candidate_words)
 
                 # Randomly select an unused candidate word, weighted by number of contexts.
                 total_contexts = sum(candidate_words.values())
@@ -459,101 +477,32 @@ class PyborgBrain(Brain):
 
                 sentence.append(cand_word)
 
+            if reverse:
+                return list(reversed(sentence))
             return sentence
 
-        sentence = list(reversed(choose_words(word)))
-        pre_words = sentence
-        sentence = sentence[-2:]
+        pre_words = choose_words([word], reverse=True)
+        self.log.debug("Chose left reply: %r", pre_words)
+        post_words = choose_words(pre_words[-2:])
+        self.log.debug("Chose right reply from %r end of left: %r", pre_words[-2:], post_words)
+        sentence = pre_words[:-2] + post_words
+        self.log.debug("So sentence is %r!", sentence)
 
-        # Now build sentence forwards from "chosen" word
+        # Clean up aliases.
+        sentence = (word.lstrip('~') for word in sentence)
 
-        # We've got
-        # cwords:    ...    cwords[w-1]    cwords[w]    cwords[w+1]    cwords[w+2]
-        # sentence:    ...    sentence[-2]    sentence[-1]    look_for    look_for ?
+        result_sentence = ' '.join(sentence)
 
-        # we are looking, for a cwords[w] known, and maybe a cwords[w-1] known, what will be the cwords[w+1] to choose.
-        # cwords[w+2] is need when cwords[w+1] is in ignored list
+        punctuation_fixups = {
+            " ' ": "'",
+            ' ?': '?',
+            ' !': '!',
+            ' ,': ',',
+        }
+        for punct_from, punct_to in punctuation_fixups.iteritems():
+            result_sentence = result_sentence.replace(punct_from, punct_to)
 
-        done = 0
-        while done == 0:
-            # create a dictionary wich will contain all the words we can found before the "chosen" word
-            post_words = {"" : 0}
-            word = str(sentence[-1].split(" ")[-1])
-            for x in self.words[word]:
-                l, w = struct.unpack("lH", x)
-                context = self.lines[l][0]
-                num_context = self.lines[l][1]
-                cwords = context.split()
-                #look if we can found a pair with the choosen word, and the next one
-                if len(sentence) > 1:
-                    if sentence[len( sentence ) - 2] != cwords[w - 1]:
-                        continue
-
-                if w < len(cwords) - 1:
-                    #if the word is in ignore_list, look the next word
-                    look_for = cwords[w + 1]
-                    if look_for in self.settings.ignore_list and w < len(cwords) - 2:
-                        look_for = look_for + " " + cwords[w + 2]
-
-                    if not (post_words.has_key(look_for)):
-                        post_words[look_for] = num_context
-                    else:
-                        post_words[look_for] += num_context
-                else:
-                    post_words[""] += num_context
-            # Sort the words
-            liste = post_words.items()
-            liste.sort(lambda x, y: cmp(y[1], x[1]))
-            numbers = [liste[0][1]]
-
-            for x in xrange(1, len(liste)):
-                numbers.append(liste[x][1] + numbers[x - 1])
-
-            #take one them from the list (randomly)
-            mot = random.randint(0, numbers[len(numbers) - 1])
-            for x in xrange(0, len(numbers)):
-                if mot <= numbers[x]:
-                    mot = liste[x][0]
-                    break
-
-            x = -1
-            while mot in sentence:
-                x += 1
-                if x >= len(liste) - 1:
-                    mot = ''
-                    break
-                mot = liste[x][0]
-
-            mot = mot.split(" ")
-            if mot == ['']:
-                done = 1
-            else:
-                [sentence.append( x ) for x in mot]
-                #map((lambda x: sentence.append(x)), mot)
-
-        sentence = pre_words[:-2] + sentence
-
-        # Replace aliases
-        for x in xrange(0, len(sentence)):
-            if sentence[x][0] == "~":
-                sentence[x] = sentence[x][1:]
-
-        # Insert space between each words
-        #map((lambda x: sentence.insert(1 + x * 2, " ")), xrange(0, len(sentence) - 1))
-        [sentence.insert(1 + x * 2, " ") for x in xrange(0, len(sentence) - 1)]
-
-        # correct the ' & , spaces problem
-        # code is not very good and can be improve but does his job...
-        for x in xrange(0, len(sentence)):
-            if sentence[x] == "'":
-                sentence[x - 1] = ""
-                sentence[x + 1] = ""
-            for split_char in ['?', '!', ',']:
-                if sentence[x] == split_char:
-                    sentence[x - 1] = ""
-
-        # return as string..
-        return "".join( sentence )
+        return result_sentence
 
     def replace_word(self, old, new):
         """

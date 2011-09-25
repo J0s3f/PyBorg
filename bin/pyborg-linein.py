@@ -75,7 +75,7 @@ class ModLineIn:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     my_pyborg = pyborg.Pyborg()
     try:
         ModLineIn(my_pyborg)
