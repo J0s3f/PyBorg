@@ -31,30 +31,9 @@ def _load_config(filename):
     """
     if not os.access(filename, os.R_OK):
         return
-
-    with open(filename, 'r') as f:
-        settings = {}
-
-        for line, i in izip(f, count(1)):
-            line = line.rstrip()
-            if not line or line.startswith('#'):
-                continue
-
-            # TODO: add multiline values back in
-            #read if the string is above multiple lines
-            #while s.rfind("\\") > -1:
-            #    s = s[:s.rfind("\\")] + f.readline()
-            #    line = line + 1
-
-            try:
-                key, value = line.split('=', 1)
-            except ValueError:
-                raise ValueError("Malformed config line {0} in config file {1}: missing '=' in {2}".format(i, filename, repr(line)))
-
-            key, value = key.strip(), value.strip()
-            settings[key] = eval(value)
-
-    return settings
+    settings = dict()
+    execfile(filename, settings)
+    return dict((k, v) for k, v in settings.iteritems() if not k.startswith('_'))
 
 
 def _save_config(filename, fields):
@@ -101,7 +80,7 @@ class Settings(object):
         keys = {}
         for i in self.__dict__.keys():
             # reserved
-            if i == "_defaults" or i == "_filename":
+            if i.startswith('_'):
                 continue
             if self._defaults.has_key(i):
                 comment = self._defaults[i][0]
@@ -110,4 +89,3 @@ class Settings(object):
             keys[i] = (comment, self.__dict__[i])
         # save to config file
         _save_config(self._filename, keys)
-
