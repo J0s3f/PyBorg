@@ -972,7 +972,7 @@ class Pyborg(object):
             message = command_method(io_module, command_list, args)
         except Exception, exc:
             message = 'Oops, internal error :('
-            self.log.exception()
+            self.log.exception('Internal error dispatching command %r', body)
         if message:
             io_module.output(message, args)
 
