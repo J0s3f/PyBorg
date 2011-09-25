@@ -401,47 +401,54 @@ class PyborgBrain(Brain):
         self.log.debug("Rarest words with %d contexts: %r", fewest_contexts, rarest_words)
 
         # Index now contains list of rarest known words in sentence
-        word = random.choice(rarest_words)
-        self.log.debug("Selected seed word: %r", word)
+        seed_word = random.choice(rarest_words)
+        self.log.debug("Selected seed word: %r", seed_word)
 
         # Build sentence backwards from "chosen" word
-        sentence = [word]
-        done = 0
-        while done == 0:
+        sentence = [seed_word]
+
+        EOL = ''
+        done = False
+        while not done:
             # create a dictionary wich will contain all the words we can found before the "chosen" word
-            pre_words = {"" : 0}
-            #this is for prevent the case when we have an ignore_listed word
-            word = str(sentence[0].split( " " )[0])
-            for x in xrange(0, len(self.words[word]) - 1):
-                l, w = struct.unpack("lH", self.words[word][x])
-                context = self.lines[l][0]
-                num_context = self.lines[l][1]
-                cwords = context.split()
-                # if the word is not the first of the context, look the previous one
-                if cwords[w] != word:
-                    print context
-                if w:
-                    # look if we can found a pair with the choosen word, and the previous one
-                    if len(sentence) > 1 and len(cwords) > w + 1:
-                        if sentence[1] != cwords[w + 1]:
-                            continue
+            candidate_words = { EOL: 0 }
 
-                    # if the word is in ignore_list, look the previous word
-                    look_for = cwords[w - 1]
-                    if look_for in self.settings.ignore_list and w > 1:
-                        look_for = cwords[w - 2] + " " + look_for
+            this_word = sentence[0]
+            for context in self.words[this_word]:
+                line_hash, word_index = struct.unpack("lH", context)
+                line, num_contexts = self.lines[line_hash]
+                line_words = line.split()
 
-                    #saves how many times we can found each word
-                    if not (pre_words.has_key(look_for)):
-                        pre_words[look_for] = num_context
-                    else :
-                        pre_words[look_for] += num_context
+                assert line_words[word_index] == this_word, 'Inconsistent context %r thought word %r was #%d' % (
+                    line, this_word, word_index)
 
+                try:
+                    cand_word = line_words[word_index - 1]
+                except IndexError:
+                    # The seed word is at the end of the line, so nominate the EOL.
+                    candidate_words[EOL] += num_contexts
+                    continue
+
+                # Don't nominate a word that's already in the sentence.
+                if cand_word in sentence:
+                    continue
+
+                # Does the *previous* word in the candidate word's sentence *also* match?
+                # That is, does the candidate word follow a run of *two* words in the sentence?
+                try:
+                    following_word_matches = sentence[0 - -1] == line_words[word_index - -1]
+                except IndexError:
+                    # Either the seed sentence or the candidate line are too short to consider the next word, but that's okay.
+                    pass
                 else:
-                    pre_words[""] += num_context
+                    # If there *are* following words to compare at all, require they match.
+                    if not following_word_matches:
+                        continue
+
+                candidate_words[cand_word] = candidate_words.get(cand_word, 0) + num_contexts
 
             # Sort the words
-            liste = pre_words.items()
+            liste = candidate_words.items()
             liste.sort( lambda x, y: cmp( y[1], x[1] ) )
 
             numbers = [liste[0][1]]
@@ -465,7 +472,7 @@ class PyborgBrain(Brain):
             mot = mot.split(" ")
             mot.reverse()
             if mot == ['']:
-                done = 1
+                done = True
             else:
                 #map((lambda x: sentence.insert(0, x)), mot)
                 [sentence.insert(0, x) for x in mot]
