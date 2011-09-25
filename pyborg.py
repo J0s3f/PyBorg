@@ -309,7 +309,7 @@ class PyborgBrain(Brain):
         elif contexts_per_word <= 100 or self.settings.learning:
             self.lines[hashval] = [clean_sentence, num_context]
             # Add a link for each word.
-            for i, word in izip(count(0), words):
+            for i, word in enumerate(words):
                 try:
                     word_contexts = self.words[word]
                 except KeyError:
