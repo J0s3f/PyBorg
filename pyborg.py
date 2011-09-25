@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+#
 # PyBorg: The python AI bot.
 #
 # Copyright (c) 2000, 2006 Tom Morton, Sebastien Dailly
@@ -23,7 +23,6 @@
 #
 # Tom Morton <tom@moretom.net>
 # Seb Dailly <seb.dailly@gmail.com>
-"""
 
 from __future__ import division
 
