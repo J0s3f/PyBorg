@@ -377,41 +377,32 @@ class PyborgBrain(Brain):
         """
         Reply to a line of text.
         """
-        # split sentences into list of words
-        _words = body.split()
-        words = []
-        for i in _words:
-            words += i.split()
-        del _words
+        words = body.split()
+        if not words:
+            self.log.debug("No words to reply to, returning empty reply")
+            return ''
 
-        if len(words) == 0:
-            return ""
-
-        # remove words on the ignore list
+        # Remove numbers and words on the ignore list.
         #words = filter((lambda x: x not in self.settings.ignore_list and not x.isdigit()), words)
-        words = (x for x in words if x not in self.settings.ignore_list and not x.isdigit())
+        words = list(x for x in words if x not in self.settings.ignore_list and not x.isdigit())
+        self.log.debug("Minus ignored words: %r", words)
 
-        # Find rarest word (excluding those unknown)
-        index = []
-        known = -1
-        # The word has to be seen in already 3 contexts differents for being choosen
+        # Find the rarest words in the sentence that have at least 3 contexts.
         known_min = 3
-        for x in words:
-            if self.words.has_key(x):
-                k = len(self.words[x])
-            else:
-                continue
-            if (known == -1 or k < known) and k > known_min:
-                index = [x]
-                known = k
-                continue
-            elif k == known:
-                index.append(x)
-                continue
+        word_data = list((word, len(self.words.get(word, ()))) for word in words)
+        self.log.debug("Seed words and context counts: %r", word_data)
+        word_data = list((word, contexts) for word, contexts in word_data if contexts >= known_min)
+        try:
+            fewest_contexts = min(contexts for word, contexts in word_data)
+        except ValueError:
+            self.log.debug("No eligible seed words in %r, returning empty reply", body)
+            return ''
+        rarest_words = list(word for word, contexts in word_data if contexts == fewest_contexts)
+        self.log.debug("Rarest words with %d contexts: %r", fewest_contexts, rarest_words)
+
         # Index now contains list of rarest known words in sentence
-        if len(index) == 0:
-            return ""
-        word = index[random.randint(0, len(index) - 1)]
+        word = random.choice(rarest_words)
+        self.log.debug("Selected seed word: %r", word)
 
         # Build sentence backwards from "chosen" word
         sentence = [word]
